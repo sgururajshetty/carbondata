@@ -1,3 +1,20 @@
+<!--
+    Licensed to the Apache Software Foundation (ASF) under one or more 
+    contributor license agreements.  See the NOTICE file distributed with
+    this work for additional information regarding copyright ownership. 
+    The ASF licenses this file to you under the Apache License, Version 2.0
+    (the "License"); you may not use this file except in compliance with 
+    the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software 
+    distributed under the License is distributed on an "AS IS" BASIS, 
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and 
+    limitations under the License.
+-->
+
 # SDK Guide
 In the carbon jars package, there exist a carbondata-store-sdk-x.x.x-SNAPSHOT.jar, including SDK writer and reader.
 # SDK Writer
@@ -130,7 +147,7 @@ public class TestSdkJson {
        testJsonSdkWriter();
    }
    
-   public void testJsonSdkWriter() throws InvalidLoadOptionException {
+   public static void testJsonSdkWriter() throws InvalidLoadOptionException {
     String path = "./target/testJsonSdkWriter";
 
     Field[] fields = new Field[2];
@@ -297,7 +314,7 @@ public CarbonWriterBuilder persistSchemaFile(boolean persist);
 *               by default it is system time in nano seconds.
 * @return updated CarbonWriterBuilder
 */
-public CarbonWriterBuilder taskNo(String taskNo);
+public CarbonWriterBuilder taskNo(long taskNo);
 ```
 
 ```
@@ -340,7 +357,7 @@ public CarbonWriterBuilder withLoadOptions(Map<String, String> options);
 * @throws IOException
 * @throws InvalidLoadOptionException
 */
-public CarbonWriter buildWriterForCSVInput() throws IOException, InvalidLoadOptionException;
+public CarbonWriter buildWriterForCSVInput(org.apache.carbondata.sdk.file.Schema schema) throws IOException, InvalidLoadOptionException;
 ```
 
 ```  
@@ -351,7 +368,7 @@ public CarbonWriter buildWriterForCSVInput() throws IOException, InvalidLoadOpti
 * @throws IOException
 * @throws InvalidLoadOptionException
 */
-public CarbonWriter buildWriterForAvroInput() throws IOException, InvalidLoadOptionException;
+public CarbonWriter buildWriterForAvroInput(org.apache.avro.Schema schema) throws IOException, InvalidLoadOptionException;
 ```
 
 ```

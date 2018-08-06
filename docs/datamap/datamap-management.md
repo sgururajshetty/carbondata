@@ -1,3 +1,20 @@
+<!--
+    Licensed to the Apache Software Foundation (ASF) under one or more 
+    contributor license agreements.  See the NOTICE file distributed with
+    this work for additional information regarding copyright ownership. 
+    The ASF licenses this file to you under the Apache License, Version 2.0
+    (the "License"); you may not use this file except in compliance with 
+    the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software 
+    distributed under the License is distributed on an "AS IS" BASIS, 
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and 
+    limitations under the License.
+-->
+
 # CarbonData DataMap Management
 
 ## Overview
@@ -22,13 +39,13 @@ Currently, there are 5 DataMap implementation in CarbonData.
 | timeseries       | time dimension rollup table.             | event_time, xx_granularity, please refer to [Timeseries DataMap](https://github.com/apache/carbondata/blob/master/docs/datamap/timeseries-datamap-guide.md) | Automatic        |
 | mv               | multi-table pre-aggregate table,         | No DMPROPERTY is required                | Manual           |
 | lucene           | lucene indexing for text column          | index_columns to specifying the index columns | Manual/Automatic |
-| bloom            | bloom filter for high cardinality column, geospatial column | index_columns to specifying the index columns | Manual/Automatic |
+| bloomfilter      | bloom filter for high cardinality column, geospatial column | index_columns to specifying the index columns | Manual/Automatic |
 
 ## DataMap Management
 
 There are two kinds of management semantic for DataMap.
 
-1. Autmatic Refresh: Create datamap without `WITH DEFERED REBUILD` in the statement
+1. Automatic Refresh: Create datamap without `WITH DEFERED REBUILD` in the statement, which is by default.
 2. Manual Refresh: Create datamap with `WITH DEFERED REBUILD` in the statement
 
 ### Automatic Refresh
@@ -51,15 +68,23 @@ If user do want to perform above operations on the main table, user can first dr
 
 If user drop the main table, the datamap will be dropped immediately too.
 
+We do recommend you to use this management for index datamap.
+
 ### Manual Refresh
 
 When user creates a datamap specifying maunal refresh semantic, the datamap is created with status *disabled* and query will NOT use this datamap until user can issue REBUILD DATAMAP command to build the datamap. For every REBUILD DATAMAP command, system will trigger a full rebuild of the datamap. After rebuild is done, system will change datamap status to *enabled*, so that it can be used in query rewrite.
 
-For every new data loading, data update, delete, the related datamap will be made *disabled*.
+For every new data loading, data update, delete, the related datamap will be made *disabled*,
+which means that the following queries will not benefit from the datamap before it becomes *enabled* again.
 
 If the main table is dropped by user, the related datamap will be dropped immediately.
 
-*Note: If you are creating a datamap on external table, you need to do manual managment of the datamap.*
+**Note**:
++ If you are creating a datamap on external table, you need to do manual management of the datamap.
++ For index datamap such as BloomFilter datamap, there is no need to do manual refresh.
+ By default it is automatic refresh,
+ which means its data will get refreshed immediately after the datamap is created or the main table is loaded.
+ Manual refresh on this datamap will has no impact.
 
 
 
