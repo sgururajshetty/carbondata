@@ -53,6 +53,8 @@ import org.apache.carbondata.core.util.ThreadLocalSessionInfo;
 import static org.apache.carbondata.core.metadata.schema.datamap.DataMapClassProvider.MV;
 import static org.apache.carbondata.core.metadata.schema.datamap.DataMapClassProvider.PREAGGREGATE;
 
+import org.apache.hadoop.fs.Path;
+
 /**
  * It maintains all the DataMaps in it.
  */
@@ -69,6 +71,11 @@ public final class DataMapStoreManager {
    * Contains the list of datamaps for each table.
    */
   private Map<String, List<TableDataMap>> allDataMaps = new ConcurrentHashMap<>();
+
+  /**
+   * Contains the table name to the tablepath mapping.
+   */
+  private Map<String, String> tablePathMap = new ConcurrentHashMap<>();
 
   /**
    * Contains the datamap catalog for each datamap provider.
@@ -308,6 +315,13 @@ public final class DataMapStoreManager {
     String tableUniqueName =
         table.getAbsoluteTableIdentifier().getCarbonTableIdentifier().getTableUniqueName();
     List<TableDataMap> tableIndices = allDataMaps.get(tableUniqueName);
+    if (tableIndices == null) {
+      String keyUsingTablePath = getKeyUsingTablePath(table.getTablePath());
+      if (keyUsingTablePath != null) {
+        tableUniqueName = keyUsingTablePath;
+        tableIndices = allDataMaps.get(tableUniqueName);
+      }
+    }
     TableDataMap dataMap = null;
     if (tableIndices != null) {
       dataMap = getTableDataMap(dataMapSchema.getDataMapName(), tableIndices);
@@ -332,6 +346,18 @@ public final class DataMapStoreManager {
       throw new RuntimeException("Datamap does not exist");
     }
     return dataMap;
+  }
+
+  private String getKeyUsingTablePath(String tablePath) {
+    if (tablePath != null) {
+      // Try get using table path
+      for (Map.Entry<String, String> entry : tablePathMap.entrySet()) {
+        if (new Path(entry.getValue()).equals(new Path(tablePath))) {
+          return entry.getKey();
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -372,6 +398,13 @@ public final class DataMapStoreManager {
     getTableSegmentRefresher(table);
     List<TableDataMap> tableIndices = allDataMaps.get(tableUniqueName);
     if (tableIndices == null) {
+      String keyUsingTablePath = getKeyUsingTablePath(table.getTablePath());
+      if (keyUsingTablePath != null) {
+        tableUniqueName = keyUsingTablePath;
+        tableIndices = allDataMaps.get(tableUniqueName);
+      }
+    }
+    if (tableIndices == null) {
       tableIndices = new ArrayList<>();
     }
 
@@ -388,6 +421,7 @@ public final class DataMapStoreManager {
 
     tableIndices.add(dataMap);
     allDataMaps.put(tableUniqueName, tableIndices);
+    tablePathMap.put(tableUniqueName, table.getTablePath());
     return dataMap;
   }
 
@@ -426,6 +460,13 @@ public final class DataMapStoreManager {
     CarbonTable carbonTable = getCarbonTable(identifier);
     String tableUniqueName = identifier.getCarbonTableIdentifier().getTableUniqueName();
     List<TableDataMap> tableIndices = allDataMaps.get(tableUniqueName);
+    if (tableIndices == null) {
+      String keyUsingTablePath = getKeyUsingTablePath(identifier.getTablePath());
+      if (keyUsingTablePath != null) {
+        tableUniqueName = keyUsingTablePath;
+        tableIndices = allDataMaps.get(tableUniqueName);
+      }
+    }
     if (null != carbonTable && tableIndices != null) {
       try {
         DataMapUtil.executeDataMapJobForClearingDataMaps(carbonTable);
@@ -437,6 +478,7 @@ public final class DataMapStoreManager {
     segmentRefreshMap.remove(identifier.uniqueName());
     clearDataMaps(tableUniqueName);
     allDataMaps.remove(tableUniqueName);
+    tablePathMap.remove(tableUniqueName);
   }
 
   /**
@@ -454,7 +496,7 @@ public final class DataMapStoreManager {
             .buildFromTablePath(identifier.getTableName(), identifier.getDatabaseName(),
                 identifier.getTablePath(), identifier.getCarbonTableIdentifier().getTableId());
       } catch (IOException e) {
-        LOGGER.error("failed to get carbon table from table Path");
+        LOGGER.warn("failed to get carbon table from table Path" + e.getMessage());
         // ignoring exception
       }
     }
@@ -477,6 +519,7 @@ public final class DataMapStoreManager {
       }
     }
     allDataMaps.remove(tableUniqName);
+    tablePathMap.remove(tableUniqName);
   }
 
   /**

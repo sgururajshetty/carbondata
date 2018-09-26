@@ -186,7 +186,7 @@ class CarbonTableCompactor(carbonLoadModel: CarbonLoadModel,
     val mergeStatus =
       if (CompactionType.IUD_UPDDEL_DELTA == compactionType) {
         new CarbonIUDMergerRDD(
-          sc.sparkContext,
+          sc.sparkSession,
           new MergeResultImpl(),
           carbonLoadModel,
           carbonMergerMapping,
@@ -194,7 +194,7 @@ class CarbonTableCompactor(carbonLoadModel: CarbonLoadModel,
         ).collect
       } else {
         new CarbonMergerRDD(
-          sc.sparkContext,
+          sc.sparkSession,
           new MergeResultImpl(),
           carbonLoadModel,
           carbonMergerMapping,
@@ -285,9 +285,9 @@ class CarbonTableCompactor(carbonLoadModel: CarbonLoadModel,
       OperationListenerBus.getInstance()
         .fireEvent(compactionLoadStatusPostEvent, operationContext)
       if (null != tableDataMaps) {
-        val buildDataMapPostExecutionEvent: BuildDataMapPostExecutionEvent =
-          new BuildDataMapPostExecutionEvent(sqlContext.sparkSession,
-            carbonTable.getAbsoluteTableIdentifier)
+        val buildDataMapPostExecutionEvent = new BuildDataMapPostExecutionEvent(
+          sqlContext.sparkSession, carbonTable.getAbsoluteTableIdentifier,
+          Seq(carbonLoadModel.getSegmentId), true)
         OperationListenerBus.getInstance()
           .fireEvent(buildDataMapPostExecutionEvent, dataMapOperationContext)
       }

@@ -34,6 +34,7 @@ import org.apache.spark.util.AlterTableUtil
 import org.apache.carbondata.common.exceptions.sql.MalformedCarbonCommandException
 import org.apache.carbondata.common.logging.{LogService, LogServiceFactory}
 import org.apache.carbondata.core.constants.CarbonCommonConstants
+import org.apache.carbondata.core.datastore.compression.CompressorFactory
 import org.apache.carbondata.core.datastore.impl.FileFactory
 import org.apache.carbondata.core.exception.ConcurrentOperationException
 import org.apache.carbondata.core.locks.{CarbonLockFactory, LockUsage}
@@ -159,6 +160,10 @@ case class CarbonAlterTableCompactionCommand(
       carbonLoadModel.setCarbonTransactionalTable(table.isTransactionalTable)
       carbonLoadModel.setDatabaseName(table.getDatabaseName)
       carbonLoadModel.setTablePath(table.getTablePath)
+      val columnCompressor = table.getTableInfo.getFactTable.getTableProperties.asScala
+        .getOrElse(CarbonCommonConstants.COMPRESSOR,
+          CompressorFactory.getInstance().getCompressor.getName)
+      carbonLoadModel.setColumnCompressor(columnCompressor)
 
       var storeLocation = System.getProperty("java.io.tmpdir")
       storeLocation = storeLocation + "/carbonstore/" + System.nanoTime()
@@ -325,10 +330,13 @@ case class CarbonAlterTableCompactionCommand(
   ): Unit = {
     val LOGGER: LogService = LogServiceFactory.getLogService(this.getClass.getName)
     val carbonTable = carbonLoadModel.getCarbonDataLoadSchema.getCarbonTable
-    // 1. acquire lock of streaming.lock
+    // 1. delete the lock of streaming.lock, forcing the stream to be closed
     val streamingLock = CarbonLockFactory.getCarbonLockObj(
       carbonTable.getTableInfo.getOrCreateAbsoluteTableIdentifier,
       LockUsage.STREAMING_LOCK)
+    if (!FileFactory.getCarbonFile(streamingLock.getLockFilePath).delete()) {
+       LOGGER.warn("failed to delete lock file: " + streamingLock.getLockFilePath)
+    }
     try {
       if (streamingLock.lockWithRetries()) {
         // 2. convert segment status from "streaming" to "streaming finish"

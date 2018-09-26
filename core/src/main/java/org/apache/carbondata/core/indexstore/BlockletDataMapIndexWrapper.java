@@ -21,21 +21,30 @@ import java.io.Serializable;
 import java.util.List;
 
 import org.apache.carbondata.core.cache.Cacheable;
+import org.apache.carbondata.core.datamap.dev.DataMap;
 import org.apache.carbondata.core.indexstore.blockletindex.BlockDataMap;
+
+import org.apache.hadoop.conf.Configuration;
 
 /**
  * A cacheable wrapper of datamaps
  */
 public class BlockletDataMapIndexWrapper implements Cacheable, Serializable {
 
+  private static final long serialVersionUID = -2859075086955465810L;
+
   private List<BlockDataMap> dataMaps;
 
   private String segmentId;
 
+  private transient Configuration configuration;
+
   // size of the wrapper. basically the total size of the datamaps this wrapper is holding
   private long wrapperSize;
 
-  public BlockletDataMapIndexWrapper(String segmentId,List<BlockDataMap> dataMaps) {
+  public BlockletDataMapIndexWrapper(String segmentId,List<BlockDataMap> dataMaps, Configuration
+      configuration) {
+    this.configuration = configuration;
     this.dataMaps = dataMaps;
     this.wrapperSize = 0L;
     this.segmentId = segmentId;
@@ -57,11 +66,22 @@ public class BlockletDataMapIndexWrapper implements Cacheable, Serializable {
     return wrapperSize;
   }
 
+  @Override public void invalidate() {
+    for (DataMap dataMap : dataMaps) {
+      dataMap.clear();
+    }
+    dataMaps = null;
+  }
+
   public List<BlockDataMap> getDataMaps() {
     return dataMaps;
   }
 
   public String getSegmentId() {
     return segmentId;
+  }
+
+  public Configuration getConfiguration() {
+    return configuration;
   }
 }

@@ -23,12 +23,17 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 
+import org.apache.carbondata.core.constants.CarbonCommonConstants;
 import org.apache.carbondata.core.memory.CarbonUnsafe;
+import org.apache.carbondata.core.memory.MemoryException;
 import org.apache.carbondata.core.metadata.datatype.DataType;
 import org.apache.carbondata.core.metadata.datatype.DataTypes;
+import org.apache.carbondata.core.util.CarbonUnsafeUtil;
 import org.apache.carbondata.core.util.DataTypeUtil;
 import org.apache.carbondata.core.util.NonDictionaryUtil;
+import org.apache.carbondata.core.util.ReUsableByteArrayDataOutputStream;
 import org.apache.carbondata.processing.loading.row.IntermediateSortTempRow;
 import org.apache.carbondata.processing.sort.sortdata.SortParameters;
 import org.apache.carbondata.processing.sort.sortdata.TableFieldStat;
@@ -65,6 +70,14 @@ public class SortStepRowHandler implements Serializable {
 
   private DataType[] dataTypes;
 
+  private DataType[] noDictSortDataTypes;
+
+  private boolean[] noDictSortColMapping;
+
+  private DataType[] noDictNoSortDataTypes;
+
+  private boolean[] noDictNoSortColMapping;
+
   /**
    * constructor
    * @param tableFieldStat table field stat
@@ -85,6 +98,16 @@ public class SortStepRowHandler implements Serializable {
     this.complexDimIdx = tableFieldStat.getComplexDimIdx();
     this.measureIdx = tableFieldStat.getMeasureIdx();
     this.dataTypes = tableFieldStat.getMeasureDataType();
+    this.noDictSortDataTypes = tableFieldStat.getNoDictSortDataType();
+    noDictSortColMapping = new boolean[noDictSortDataTypes.length];
+    for (int i = 0; i < noDictSortDataTypes.length; i++) {
+      noDictSortColMapping[i] = DataTypeUtil.isPrimitiveColumn(noDictSortDataTypes[i]);
+    }
+    this.noDictNoSortDataTypes = tableFieldStat.getNoDictNoSortDataType();
+    noDictNoSortColMapping = new boolean[noDictNoSortDataTypes.length];
+    for (int i = 0; i < noDictNoSortDataTypes.length; i++) {
+      noDictNoSortColMapping[i] = DataTypeUtil.isPrimitiveColumn(noDictNoSortDataTypes[i]);
+    }
   }
 
   /**
@@ -108,8 +131,8 @@ public class SortStepRowHandler implements Serializable {
     try {
       int[] dictDims
           = new int[this.dictSortDimCnt + this.dictNoSortDimCnt];
-      byte[][] nonDictArray = new byte[this.noDictSortDimCnt + this.noDictNoSortDimCnt
-                                       + this.varcharDimCnt + this.complexDimCnt ][];
+      Object[] nonDictArray = new Object[this.noDictSortDimCnt + this.noDictNoSortDimCnt
+                                       + this.varcharDimCnt + this.complexDimCnt];
       Object[] measures = new Object[this.measureCnt];
 
       // convert dict & data
@@ -125,19 +148,19 @@ public class SortStepRowHandler implements Serializable {
       // convert no-dict & sort
       idxAcc = 0;
       for (int idx = 0; idx < this.noDictSortDimCnt; idx++) {
-        nonDictArray[idxAcc++] = (byte[]) row[this.noDictSortDimIdx[idx]];
+        nonDictArray[idxAcc++] = row[this.noDictSortDimIdx[idx]];
       }
       // convert no-dict & no-sort
       for (int idx = 0; idx < this.noDictNoSortDimCnt; idx++) {
-        nonDictArray[idxAcc++] = (byte[]) row[this.noDictNoSortDimIdx[idx]];
+        nonDictArray[idxAcc++] = row[this.noDictNoSortDimIdx[idx]];
       }
       // convert varchar dims
       for (int idx = 0; idx < this.varcharDimCnt; idx++) {
-        nonDictArray[idxAcc++] = (byte[]) row[this.varcharDimIdx[idx]];
+        nonDictArray[idxAcc++] = row[this.varcharDimIdx[idx]];
       }
       // convert complex dims
       for (int idx = 0; idx < this.complexDimCnt; idx++) {
-        nonDictArray[idxAcc++] = (byte[]) row[this.complexDimIdx[idx]];
+        nonDictArray[idxAcc++] = row[this.complexDimIdx[idx]];
       }
 
       // convert measure data
@@ -178,7 +201,7 @@ public class SortStepRowHandler implements Serializable {
   public IntermediateSortTempRow readWithoutNoSortFieldConvert(
       DataInputStream inputStream) throws IOException {
     int[] dictSortDims = new int[this.dictSortDimCnt];
-    byte[][] noDictSortDims = new byte[this.noDictSortDimCnt][];
+    Object[] noDictSortDims = new Object[this.noDictSortDimCnt];
 
     // read dict & sort dim data
     for (int idx = 0; idx < this.dictSortDimCnt; idx++) {
@@ -187,10 +210,8 @@ public class SortStepRowHandler implements Serializable {
 
     // read no-dict & sort data
     for (int idx = 0; idx < this.noDictSortDimCnt; idx++) {
-      short len = inputStream.readShort();
-      byte[] bytes = new byte[len];
-      inputStream.readFully(bytes);
-      noDictSortDims[idx] = bytes;
+      // for no dict measure column get the original data
+      noDictSortDims[idx] = getDataForNoDictSortColumn(inputStream, idx);
     }
 
     // read no-dict dims & measures
@@ -213,9 +234,9 @@ public class SortStepRowHandler implements Serializable {
   public IntermediateSortTempRow readWithNoSortFieldConvert(
       DataInputStream inputStream) throws IOException {
     int[] dictSortDims = new int[this.dictSortDimCnt + this.dictNoSortDimCnt];
-    byte[][] noDictSortDims =
-        new byte[this.noDictSortDimCnt + this.noDictNoSortDimCnt + this.varcharDimCnt
-            + this.complexDimCnt][];
+    Object[] noDictSortDims =
+        new Object[this.noDictSortDimCnt + this.noDictNoSortDimCnt + this.varcharDimCnt
+            + this.complexDimCnt];
 
     // read dict & sort dim data
     for (int idx = 0; idx < this.dictSortDimCnt; idx++) {
@@ -224,10 +245,8 @@ public class SortStepRowHandler implements Serializable {
 
     // read no-dict & sort data
     for (int idx = 0; idx < this.noDictSortDimCnt; idx++) {
-      short len = inputStream.readShort();
-      byte[] bytes = new byte[len];
-      inputStream.readFully(bytes);
-      noDictSortDims[idx] = bytes;
+      // for no dict measure column get the original data
+      noDictSortDims[idx] = getDataForNoDictSortColumn(inputStream, idx);
     }
 
     // read no-dict dims & measures
@@ -240,8 +259,63 @@ public class SortStepRowHandler implements Serializable {
     return new IntermediateSortTempRow(dictSortDims, noDictSortDims,measure);
   }
 
+  /**
+   * Return the data from the stream according to the column type
+   *
+   * @param inputStream
+   * @param idx
+   * @throws IOException
+   */
+  private Object getDataForNoDictSortColumn(DataInputStream inputStream, int idx)
+      throws IOException {
+    if (this.noDictSortColMapping[idx]) {
+      return readDataFromStream(inputStream, idx);
+    } else {
+      short len = inputStream.readShort();
+      byte[] bytes = new byte[len];
+      inputStream.readFully(bytes);
+      return bytes;
+    }
+  }
+
+  /**
+   * Read the data from the stream
+   *
+   * @param inputStream
+   * @param idx
+   * @return
+   * @throws IOException
+   */
+  private Object readDataFromStream(DataInputStream inputStream, int idx) throws IOException {
+    DataType dataType = noDictSortDataTypes[idx];
+    Object data = null;
+    if (!inputStream.readBoolean()) {
+      return null;
+    }
+    if (dataType == DataTypes.BOOLEAN) {
+      data = inputStream.readBoolean();
+    } else if (dataType == DataTypes.BYTE) {
+      data = inputStream.readByte();
+    } else if (dataType == DataTypes.SHORT) {
+      data = inputStream.readShort();
+    } else if (dataType == DataTypes.INT) {
+      data = inputStream.readInt();
+    } else if (dataType == DataTypes.LONG || dataType == DataTypes.TIMESTAMP) {
+      data = inputStream.readLong();
+    } else if (dataType == DataTypes.DOUBLE) {
+      data = inputStream.readDouble();
+    } else if (dataType == DataTypes.FLOAT) {
+      data = inputStream.readFloat();
+    } else if (dataType == DataTypes.BYTE_ARRAY || DataTypes.isDecimal(dataType)) {
+      byte[] bytes =
+          inputStream.readUTF().getBytes(Charset.forName(CarbonCommonConstants.DEFAULT_CHARSET));
+      data = bytes;
+    }
+    return data;
+  }
+
   private void unpackNoSortFromBytes(byte[] noSortDimsAndMeasures, int[] dictDims,
-      byte[][] noDictDims, Object[] measures) {
+      Object[] noDictDims, Object[] measures) {
     ByteBuffer rowBuffer = ByteBuffer.wrap(noSortDimsAndMeasures);
     // read dict_no_sort
     for (int i = dictSortDimCnt; i < dictDims.length; i++) {
@@ -251,10 +325,15 @@ public class SortStepRowHandler implements Serializable {
     int noDictIndex = noDictSortDimCnt;
     // read no_dict_no_sort
     for (int i = 0; i < noDictNoSortDimCnt; i++) {
-      short len = rowBuffer.getShort();
-      byte[] bytes = new byte[len];
-      rowBuffer.get(bytes);
-      noDictDims[noDictIndex++] = bytes;
+      // for no dict measure column get the original data
+      if (this.noDictNoSortColMapping[i]) {
+        noDictDims[noDictIndex++] = getDataFromRowBuffer(noDictNoSortDataTypes[i], rowBuffer);
+      } else {
+        short len = rowBuffer.getShort();
+        byte[] bytes = new byte[len];
+        rowBuffer.get(bytes);
+        noDictDims[noDictIndex++] = bytes;
+      }
     }
 
     // read varchar dims
@@ -267,7 +346,7 @@ public class SortStepRowHandler implements Serializable {
 
     // read complex dims
     for (int i = 0; i < complexDimCnt; i++) {
-      short len = rowBuffer.getShort();
+      int len = rowBuffer.getInt();
       byte[] bytes = new byte[len];
       rowBuffer.get(bytes);
       noDictDims[noDictIndex++] = bytes;
@@ -275,39 +354,53 @@ public class SortStepRowHandler implements Serializable {
 
     // read measure
     int measureCnt = measures.length;
-    DataType tmpDataType;
     Object tmpContent;
     for (short idx = 0 ; idx < measureCnt; idx++) {
-      if ((byte) 0 == rowBuffer.get()) {
-        measures[idx] = null;
-        continue;
-      }
-
-      tmpDataType = dataTypes[idx];
-      if (DataTypes.BOOLEAN == tmpDataType) {
-        if ((byte) 1 == rowBuffer.get()) {
-          tmpContent = true;
-        } else {
-          tmpContent = false;
-        }
-      } else if (DataTypes.SHORT == tmpDataType) {
-        tmpContent = rowBuffer.getShort();
-      } else if (DataTypes.INT == tmpDataType) {
-        tmpContent = rowBuffer.getInt();
-      } else if (DataTypes.LONG == tmpDataType) {
-        tmpContent = rowBuffer.getLong();
-      } else if (DataTypes.DOUBLE == tmpDataType) {
-        tmpContent = rowBuffer.getDouble();
-      } else if (DataTypes.isDecimal(tmpDataType)) {
-        short len = rowBuffer.getShort();
-        byte[] decimalBytes = new byte[len];
-        rowBuffer.get(decimalBytes);
-        tmpContent = DataTypeUtil.byteToBigDecimal(decimalBytes);
-      } else {
-        throw new IllegalArgumentException("Unsupported data type: " + tmpDataType);
-      }
+      tmpContent = getDataFromRowBuffer(dataTypes[idx], rowBuffer);
       measures[idx] = tmpContent;
     }
+  }
+
+  /**
+   * Retrieve/Get the data from the row buffer.
+   *
+   * @param tmpDataType
+   * @param rowBuffer
+   * @return
+   */
+  private Object getDataFromRowBuffer(DataType tmpDataType, ByteBuffer rowBuffer) {
+    Object tmpContent;
+    if ((byte) 0 == rowBuffer.get()) {
+      return null;
+    }
+
+    if (DataTypes.BOOLEAN == tmpDataType) {
+      if ((byte) 1 == rowBuffer.get()) {
+        tmpContent = true;
+      } else {
+        tmpContent = false;
+      }
+    } else if (DataTypes.SHORT == tmpDataType) {
+      tmpContent = rowBuffer.getShort();
+    } else if (DataTypes.INT == tmpDataType) {
+      tmpContent = rowBuffer.getInt();
+    } else if (DataTypes.LONG == tmpDataType || DataTypes.TIMESTAMP == tmpDataType) {
+      tmpContent = rowBuffer.getLong();
+    } else if (DataTypes.DOUBLE == tmpDataType) {
+      tmpContent = rowBuffer.getDouble();
+    } else if (DataTypes.FLOAT == tmpDataType) {
+      tmpContent = rowBuffer.getFloat();
+    } else if (DataTypes.BYTE == tmpDataType) {
+      tmpContent = rowBuffer.get();
+    } else if (DataTypes.isDecimal(tmpDataType)) {
+      short len = rowBuffer.getShort();
+      byte[] decimalBytes = new byte[len];
+      rowBuffer.get(decimalBytes);
+      tmpContent = DataTypeUtil.byteToBigDecimal(decimalBytes);
+    } else {
+      throw new IllegalArgumentException("Unsupported data type: " + tmpDataType);
+    }
+    return tmpContent;
   }
 
   /**
@@ -327,9 +420,14 @@ public class SortStepRowHandler implements Serializable {
 
     // write no-dict & sort dim
     for (int idx = 0; idx < this.noDictSortDimCnt; idx++) {
-      byte[] bytes = sortTempRow.getNoDictSortDims()[idx];
-      outputStream.writeShort(bytes.length);
-      outputStream.write(bytes);
+      if (this.noDictSortColMapping[idx]) {
+        // write the original data to the stream
+        writeDataToStream(sortTempRow.getNoDictSortDims()[idx], outputStream, idx);
+      } else {
+        byte[] bytes = (byte[]) sortTempRow.getNoDictSortDims()[idx];
+        outputStream.writeShort(bytes.length);
+        outputStream.write(bytes);
+      }
     }
 
     // write packed no-sort dim & measure
@@ -347,11 +445,12 @@ public class SortStepRowHandler implements Serializable {
    *
    * @param row raw row
    * @param outputStream output stream
-   * @param rowBuffer array backend buffer
+   * @param reUsableByteArrayDataOutputStream DataOutputStream backend by ByteArrayOutputStream
    * @throws IOException if error occurs while writing to stream
    */
   public void writeRawRowAsIntermediateSortTempRowToOutputStream(Object[] row,
-      DataOutputStream outputStream, ByteBuffer rowBuffer) throws IOException {
+      DataOutputStream outputStream,
+      ReUsableByteArrayDataOutputStream reUsableByteArrayDataOutputStream) throws IOException {
     // write dict & sort
     for (int idx = 0; idx < this.dictSortDimCnt; idx++) {
       outputStream.writeInt((int) row[this.dictSortDimIdx[idx]]);
@@ -359,20 +458,64 @@ public class SortStepRowHandler implements Serializable {
 
     // write no-dict & sort
     for (int idx = 0; idx < this.noDictSortDimCnt; idx++) {
-      byte[] bytes = (byte[]) row[this.noDictSortDimIdx[idx]];
-      outputStream.writeShort(bytes.length);
-      outputStream.write(bytes);
+      if (this.noDictSortColMapping[idx]) {
+        // write the original data to the stream
+        writeDataToStream(row[this.noDictSortDimIdx[idx]], outputStream, idx);
+      } else {
+        byte[] bytes = (byte[]) row[this.noDictSortDimIdx[idx]];
+        outputStream.writeShort(bytes.length);
+        outputStream.write(bytes);
+      }
     }
 
     // pack no-sort
-    rowBuffer.clear();
-    packNoSortFieldsToBytes(row, rowBuffer);
-    rowBuffer.flip();
-    int packSize = rowBuffer.limit();
+    reUsableByteArrayDataOutputStream.reset();
+    packNoSortFieldsToBytes(row, reUsableByteArrayDataOutputStream);
+    int packSize = reUsableByteArrayDataOutputStream.getSize();
 
     // write no-sort
     outputStream.writeInt(packSize);
-    outputStream.write(rowBuffer.array(), 0, packSize);
+    outputStream.write(reUsableByteArrayDataOutputStream.getByteArray(), 0, packSize);
+  }
+
+  /**
+   * Write the data to stream
+   *
+   * @param data
+   * @param outputStream
+   * @param idx
+   * @throws IOException
+   */
+  private void writeDataToStream(Object data, DataOutputStream outputStream, int idx)
+      throws IOException {
+    DataType dataType = noDictSortDataTypes[idx];
+    if (null == data) {
+      outputStream.writeBoolean(false);
+    } else {
+      outputStream.writeBoolean(true);
+      if (dataType == DataTypes.BOOLEAN) {
+        outputStream.writeBoolean((boolean) data);
+      } else if (dataType == DataTypes.BYTE) {
+        outputStream.writeByte((byte) data);
+      } else if (dataType == DataTypes.SHORT) {
+        outputStream.writeShort((short) data);
+      } else if (dataType == DataTypes.INT) {
+        outputStream.writeInt((int) data);
+      } else if (dataType == DataTypes.LONG || dataType == DataTypes.TIMESTAMP) {
+        outputStream.writeLong((long) data);
+      } else if (dataType == DataTypes.DOUBLE) {
+        outputStream.writeDouble((double) data);
+      } else if (DataTypes.isDecimal(dataType)) {
+        BigDecimal val = (BigDecimal) data;
+        byte[] bigDecimalInBytes = DataTypeUtil.bigDecimalToByte(val);
+        outputStream.writeShort(bigDecimalInBytes.length);
+        outputStream.write(bigDecimalInBytes);
+      } else if (dataType == DataTypes.FLOAT) {
+        outputStream.writeFloat((float) data);
+      } else if (dataType == DataTypes.BYTE_ARRAY) {
+        outputStream.writeUTF(data.toString());
+      }
+    }
   }
 
   /**
@@ -430,9 +573,9 @@ public class SortStepRowHandler implements Serializable {
     int size = 0;
 
     int[] dictSortDims = new int[this.dictSortDimCnt + this.dictNoSortDimCnt];
-    byte[][] noDictSortDims =
-        new byte[this.noDictSortDimCnt + this.noDictNoSortDimCnt + this.varcharDimCnt
-            + this.complexDimCnt][];
+    Object[] noDictSortDims =
+        new Object[this.noDictSortDimCnt + this.noDictNoSortDimCnt + this.varcharDimCnt
+            + this.complexDimCnt];
 
     // read dict & sort dim
     for (int idx = 0; idx < dictSortDimCnt; idx++) {
@@ -444,11 +587,24 @@ public class SortStepRowHandler implements Serializable {
     for (int idx = 0; idx < this.noDictSortDimCnt; idx++) {
       short length = CarbonUnsafe.getUnsafe().getShort(baseObject, address + size);
       size += 2;
-      byte[] bytes = new byte[length];
-      CarbonUnsafe.getUnsafe().copyMemory(baseObject, address + size,
-          bytes, CarbonUnsafe.BYTE_ARRAY_OFFSET, length);
-      size += length;
-      noDictSortDims[idx] = bytes;
+      if (this.noDictSortColMapping[idx]) {
+        // get the original data from the unsafe memory
+        if (0 == length) {
+          // if the length is 0, the the data is null
+          noDictSortDims[idx] = null;
+        } else {
+          Object data = CarbonUnsafeUtil
+              .getDataFromUnsafe(noDictSortDataTypes[idx], baseObject, address, size, length);
+          size += length;
+          noDictSortDims[idx] = data;
+        }
+      } else {
+        byte[] bytes = new byte[length];
+        CarbonUnsafe.getUnsafe()
+            .copyMemory(baseObject, address + size, bytes, CarbonUnsafe.BYTE_ARRAY_OFFSET, length);
+        size += length;
+        noDictSortDims[idx] = bytes;
+      }
     }
 
     // read no-sort dims & measures
@@ -471,10 +627,12 @@ public class SortStepRowHandler implements Serializable {
    * @param baseObject base object of the memory block
    * @param address base address of the row
    * @param outputStream output stream
+   * @param unsafeTotalLength
    * @throws IOException if error occurs while writing to stream
    */
-  public void writeIntermediateSortTempRowFromUnsafeMemoryToStream(Object baseObject,
-      long address, DataOutputStream outputStream) throws IOException {
+  public void writeIntermediateSortTempRowFromUnsafeMemoryToStream(Object baseObject, long address,
+      DataOutputStream outputStream, long unsafeRemainingLength, long unsafeTotalLength)
+      throws IOException, MemoryException {
     int size = 0;
 
     // dict & sort
@@ -487,22 +645,35 @@ public class SortStepRowHandler implements Serializable {
     for (int idx = 0; idx < noDictSortDimCnt; idx++) {
       short length = CarbonUnsafe.getUnsafe().getShort(baseObject, address + size);
       size += 2;
-      byte[] bytes = new byte[length];
-      CarbonUnsafe.getUnsafe().copyMemory(baseObject, address + size,
-          bytes, CarbonUnsafe.BYTE_ARRAY_OFFSET, length);
-      size += length;
-
-      outputStream.writeShort(length);
-      outputStream.write(bytes);
+      if (this.noDictSortColMapping[idx]) {
+        // get the original data from unsafe memory
+        if (0 == length) {
+          // if the length is 0, then the data is null
+          writeDataToStream(null, outputStream, idx);
+        } else {
+          Object data = CarbonUnsafeUtil
+              .getDataFromUnsafe(noDictSortDataTypes[idx], baseObject, address, size, length);
+          size += length;
+          writeDataToStream(data, outputStream, idx);
+        }
+      } else {
+        validateUnsafeMemoryBlockSizeLimit(unsafeRemainingLength, length, unsafeTotalLength);
+        byte[] bytes = new byte[length];
+        CarbonUnsafe.getUnsafe()
+            .copyMemory(baseObject, address + size, bytes, CarbonUnsafe.BYTE_ARRAY_OFFSET, length);
+        size += length;
+        outputStream.writeShort(length);
+        outputStream.write(bytes);
+      }
     }
 
     // packed no-sort & measure
     int len = CarbonUnsafe.getUnsafe().getInt(baseObject, address + size);
     size += 4;
+    validateUnsafeMemoryBlockSizeLimit(unsafeRemainingLength, len, unsafeTotalLength);
     byte[] noSortDimsAndMeasures = new byte[len];
     CarbonUnsafe.getUnsafe().copyMemory(baseObject, address + size,
         noSortDimsAndMeasures, CarbonUnsafe.BYTE_ARRAY_OFFSET, len);
-    size += len;
 
     outputStream.writeInt(len);
     outputStream.write(noSortDimsAndMeasures);
@@ -519,14 +690,16 @@ public class SortStepRowHandler implements Serializable {
    * @param row raw row
    * @param baseObject base object of the memory block
    * @param address base address for the row
-   * @param rowBuffer array backend buffer
+   * @param unsafeTotalLength
    * @return number of bytes written to memory
    */
-  public int writeRawRowAsIntermediateSortTempRowToUnsafeMemory(Object[] row,
-      Object baseObject, long address, ByteBuffer rowBuffer) {
+  public int writeRawRowAsIntermediateSortTempRowToUnsafeMemory(Object[] row, Object baseObject,
+      long address, ReUsableByteArrayDataOutputStream reUsableByteArrayDataOutputStream,
+      long unsafeRemainingLength, long unsafeTotalLength) throws MemoryException, IOException {
     int size = 0;
     // write dict & sort
     for (int idx = 0; idx < this.dictSortDimCnt; idx++) {
+      validateUnsafeMemoryBlockSizeLimit(unsafeRemainingLength, 4, unsafeTotalLength);
       CarbonUnsafe.getUnsafe()
           .putInt(baseObject, address + size, (int) row[this.dictSortDimIdx[idx]]);
       size += 4;
@@ -534,95 +707,145 @@ public class SortStepRowHandler implements Serializable {
 
     // write no-dict & sort
     for (int idx = 0; idx < this.noDictSortDimCnt; idx++) {
-      byte[] bytes = (byte[]) row[this.noDictSortDimIdx[idx]];
-      CarbonUnsafe.getUnsafe().putShort(baseObject, address + size, (short) bytes.length);
-      size += 2;
-      CarbonUnsafe.getUnsafe()
-          .copyMemory(bytes, CarbonUnsafe.BYTE_ARRAY_OFFSET, baseObject, address + size,
-              bytes.length);
-      size += bytes.length;
+      if (this.noDictSortColMapping[idx]) {
+        Object data = row[this.noDictSortDimIdx[idx]];
+        if (null == data) {
+          // if the data is null, then write only the length as 0.
+          CarbonUnsafe.getUnsafe().putShort(baseObject, address + size, (short) 0);
+          size += 2;
+        } else {
+          int sizeInBytes = this.noDictSortDataTypes[idx].getSizeInBytes();
+          if (this.noDictSortDataTypes[idx] == DataTypes.TIMESTAMP) {
+            sizeInBytes = DataTypes.LONG.getSizeInBytes();
+          }
+          CarbonUnsafe.getUnsafe().putShort(baseObject, address + size, (short) sizeInBytes);
+          size += 2;
+          // put data to unsafe according to the data types
+          CarbonUnsafeUtil
+              .putDataToUnsafe(noDictSortDataTypes[idx], data, baseObject, address, size,
+                  sizeInBytes);
+          size += sizeInBytes;
+        }
+      } else {
+        byte[] bytes = (byte[]) row[this.noDictSortDimIdx[idx]];
+        validateUnsafeMemoryBlockSizeLimit(unsafeRemainingLength, 2 + bytes.length,
+            unsafeTotalLength);
+        CarbonUnsafe.getUnsafe().putShort(baseObject, address + size, (short) bytes.length);
+        size += 2;
+        CarbonUnsafe.getUnsafe()
+            .copyMemory(bytes, CarbonUnsafe.BYTE_ARRAY_OFFSET, baseObject, address + size,
+                bytes.length);
+        size += bytes.length;
+      }
     }
 
     // convert pack no-sort
-    rowBuffer.clear();
-    packNoSortFieldsToBytes(row, rowBuffer);
-    rowBuffer.flip();
-    int packSize = rowBuffer.limit();
+    reUsableByteArrayDataOutputStream.reset();
+    packNoSortFieldsToBytes(row, reUsableByteArrayDataOutputStream);
+    int packSize = reUsableByteArrayDataOutputStream.getSize();
 
+    validateUnsafeMemoryBlockSizeLimit(unsafeRemainingLength, 4 + packSize, unsafeTotalLength);
     // write no-sort
     CarbonUnsafe.getUnsafe().putInt(baseObject, address + size, packSize);
     size += 4;
-    CarbonUnsafe.getUnsafe()
-        .copyMemory(rowBuffer.array(), CarbonUnsafe.BYTE_ARRAY_OFFSET, baseObject, address + size,
-            packSize);
+    CarbonUnsafe.getUnsafe().copyMemory(reUsableByteArrayDataOutputStream.getByteArray(),
+        CarbonUnsafe.BYTE_ARRAY_OFFSET, baseObject, address + size, packSize);
     size += packSize;
     return size;
   }
 
-
+  private void validateUnsafeMemoryBlockSizeLimit(long unsafeRemainingLength, int requestedSize,
+      long unsafeTotalLength) throws MemoryException {
+    if (unsafeTotalLength <= requestedSize) {
+      throw new MemoryException(
+          "not enough unsafe memory for sort: increase the 'offheap.sort.chunk.size.inmb' ");
+    } else if (unsafeRemainingLength <= requestedSize) {
+      throw new MemoryException("cannot handle this row. create new page");
+    }
+  }
 
   /**
    * Pack to no-sort fields to byte array
    *
    * @param row raw row
-   * @param rowBuffer byte array backend buffer
+   * @param @param reUsableByteArrayDataOutputStream
+   *        DataOutputStream backend by ByteArrayOutputStream
    */
-  private void packNoSortFieldsToBytes(Object[] row, ByteBuffer rowBuffer) {
+  private void packNoSortFieldsToBytes(Object[] row,
+      ReUsableByteArrayDataOutputStream reUsableByteArrayDataOutputStream) throws IOException {
     // convert dict & no-sort
     for (int idx = 0; idx < this.dictNoSortDimCnt; idx++) {
-      rowBuffer.putInt((int) row[this.dictNoSortDimIdx[idx]]);
+      reUsableByteArrayDataOutputStream.writeInt((int) row[this.dictNoSortDimIdx[idx]]);
     }
     // convert no-dict & no-sort
     for (int idx = 0; idx < this.noDictNoSortDimCnt; idx++) {
-      byte[] bytes = (byte[]) row[this.noDictNoSortDimIdx[idx]];
-      rowBuffer.putShort((short) bytes.length);
-      rowBuffer.put(bytes);
+      if (this.noDictNoSortColMapping[idx]) {
+        // put the original data to buffer
+        putDataToRowBuffer(this.noDictNoSortDataTypes[idx], row[this.noDictNoSortDimIdx[idx]],
+            reUsableByteArrayDataOutputStream);
+      } else {
+        byte[] bytes = (byte[]) row[this.noDictNoSortDimIdx[idx]];
+        reUsableByteArrayDataOutputStream.writeShort((short) bytes.length);
+        reUsableByteArrayDataOutputStream.write(bytes);
+      }
     }
     // convert varchar dims
     for (int idx = 0; idx < this.varcharDimCnt; idx++) {
       byte[] bytes = (byte[]) row[this.varcharDimIdx[idx]];
-      rowBuffer.putInt(bytes.length);
-      rowBuffer.put(bytes);
+      reUsableByteArrayDataOutputStream.writeInt(bytes.length);
+      reUsableByteArrayDataOutputStream.write(bytes);
     }
     // convert complex dims
     for (int idx = 0; idx < this.complexDimCnt; idx++) {
       byte[] bytes = (byte[]) row[this.complexDimIdx[idx]];
-      rowBuffer.putShort((short) bytes.length);
-      rowBuffer.put(bytes);
+      reUsableByteArrayDataOutputStream.writeInt(bytes.length);
+      reUsableByteArrayDataOutputStream.write(bytes);
     }
 
     // convert measure
-    Object tmpValue;
-    DataType tmpDataType;
     for (int idx = 0; idx < this.measureCnt; idx++) {
-      tmpValue = row[this.measureIdx[idx]];
-      tmpDataType = this.dataTypes[idx];
-      if (null == tmpValue) {
-        rowBuffer.put((byte) 0);
-        continue;
-      }
-      rowBuffer.put((byte) 1);
-      if (DataTypes.BOOLEAN == tmpDataType) {
-        if ((boolean) tmpValue) {
-          rowBuffer.put((byte) 1);
-        } else {
-          rowBuffer.put((byte) 0);
-        }
-      } else if (DataTypes.SHORT == tmpDataType) {
-        rowBuffer.putShort((Short) tmpValue);
-      } else if (DataTypes.INT == tmpDataType) {
-        rowBuffer.putInt((Integer) tmpValue);
-      } else if (DataTypes.LONG == tmpDataType) {
-        rowBuffer.putLong((Long) tmpValue);
-      } else if (DataTypes.DOUBLE == tmpDataType) {
-        rowBuffer.putDouble((Double) tmpValue);
-      } else if (DataTypes.isDecimal(tmpDataType)) {
-        byte[] decimalBytes = DataTypeUtil.bigDecimalToByte((BigDecimal) tmpValue);
-        rowBuffer.putShort((short) decimalBytes.length);
-        rowBuffer.put(decimalBytes);
+      putDataToRowBuffer(this.dataTypes[idx], row[this.measureIdx[idx]],
+          reUsableByteArrayDataOutputStream);
+    }
+  }
+
+  /**
+   * Put the data to the row buffer
+   *  @param tmpDataType
+   * @param tmpValue
+   * @param reUsableByteArrayDataOutputStream
+   */
+  private void putDataToRowBuffer(DataType tmpDataType, Object tmpValue,
+      ReUsableByteArrayDataOutputStream reUsableByteArrayDataOutputStream) throws IOException {
+    if (null == tmpValue) {
+      reUsableByteArrayDataOutputStream.write((byte) 0);
+      return;
+    }
+    reUsableByteArrayDataOutputStream.write((byte) 1);
+    if (DataTypes.BOOLEAN == tmpDataType) {
+      if ((boolean) tmpValue) {
+        reUsableByteArrayDataOutputStream.write((byte) 1);
       } else {
-        throw new IllegalArgumentException("Unsupported data type: " + tmpDataType);
+        reUsableByteArrayDataOutputStream.write((byte) 0);
       }
+    } else if (DataTypes.SHORT == tmpDataType) {
+      reUsableByteArrayDataOutputStream.writeShort((Short) tmpValue);
+    } else if (DataTypes.INT == tmpDataType) {
+      reUsableByteArrayDataOutputStream.writeInt((Integer) tmpValue);
+    } else if (DataTypes.LONG == tmpDataType || DataTypes.TIMESTAMP == tmpDataType) {
+      reUsableByteArrayDataOutputStream.writeLong((Long) tmpValue);
+    } else if (DataTypes.DOUBLE == tmpDataType) {
+      reUsableByteArrayDataOutputStream.writeDouble((Double) tmpValue);
+    }  else if (DataTypes.FLOAT == tmpDataType) {
+      reUsableByteArrayDataOutputStream.writeFloat((Float) tmpValue);
+    } else if (DataTypes.BYTE == tmpDataType) {
+      reUsableByteArrayDataOutputStream.write((byte) tmpValue);
+    } else if (DataTypes.isDecimal(tmpDataType)) {
+      byte[] decimalBytes = DataTypeUtil.bigDecimalToByte((BigDecimal) tmpValue);
+      reUsableByteArrayDataOutputStream.writeShort((short) decimalBytes.length);
+      reUsableByteArrayDataOutputStream.write(decimalBytes);
+    } else {
+      throw new IllegalArgumentException("Unsupported data type: " + tmpDataType);
     }
   }
 }

@@ -207,8 +207,6 @@ public final class DataLoadProcessBuilder {
             loadModel.getTaskNo(), false, false);
     CarbonProperties.getInstance().addProperty(tempLocationKey,
         StringUtils.join(storeLocation, File.pathSeparator));
-    CarbonProperties.getInstance()
-        .addProperty(CarbonCommonConstants.STORE_LOCATION_HDFS, loadModel.getTablePath());
 
     return createConfiguration(loadModel);
   }
@@ -313,6 +311,10 @@ public final class DataLoadProcessBuilder {
     }
     TableSpec tableSpec = new TableSpec(carbonTable);
     configuration.setTableSpec(tableSpec);
+    if (loadModel.getSdkWriterCores() > 0) {
+      configuration.setWritingCoresCount(loadModel.getSdkWriterCores());
+    }
+    configuration.setColumnCompressor(loadModel.getColumnCompressor());
     return configuration;
   }
 

@@ -229,7 +229,7 @@ public abstract class AbstractFactDataWriter implements CarbonFactDataWriter {
       LOGGER.info("Writing data to file as max file size reached for file: "
           + activeFile + ". Data block size: " + currentFileSize);
       // write meta data to end of the existing file
-      writeBlockletInfoToFile();
+      writeFooterToFile();
       this.currentFileSize = 0;
       this.dataChunksOffsets = new ArrayList<>();
       this.dataChunksLength = new ArrayList<>();
@@ -270,12 +270,18 @@ public abstract class AbstractFactDataWriter implements CarbonFactDataWriter {
     notifyDataMapBlockEnd();
     CarbonUtil.closeStreams(this.fileOutputStream, this.fileChannel);
     if (!enableDirectlyWriteData2Hdfs) {
-      if (copyInCurrentThread) {
-        CarbonUtil.copyCarbonDataFileToCarbonStorePath(carbonDataFileTempPath,
-            model.getCarbonDataDirectoryPath(), fileSizeInBytes);
-      } else {
-        executorServiceSubmitList.add(executorService.submit(
-            new CompleteHdfsBackendThread(carbonDataFileTempPath)));
+      try {
+        if (copyInCurrentThread) {
+          CarbonUtil.copyCarbonDataFileToCarbonStorePath(carbonDataFileTempPath,
+              model.getCarbonDataDirectoryPath(), fileSizeInBytes);
+          FileFactory
+              .deleteFile(carbonDataFileTempPath, FileFactory.getFileType(carbonDataFileTempPath));
+        } else {
+          executorServiceSubmitList
+              .add(executorService.submit(new CompleteHdfsBackendThread(carbonDataFileTempPath)));
+        }
+      } catch (IOException e) {
+        LOGGER.error("Failed to delete carbondata file from temp location" + e.getMessage());
       }
     }
   }
@@ -324,7 +330,7 @@ public abstract class AbstractFactDataWriter implements CarbonFactDataWriter {
   /**
    * This method will write metadata at the end of file file format in thrift format
    */
-  protected abstract void writeBlockletInfoToFile() throws CarbonDataWriterException;
+  protected abstract void writeFooterToFile() throws CarbonDataWriterException;
 
   /**
    * Below method will be used to fill the vlock info details
@@ -405,6 +411,7 @@ public abstract class AbstractFactDataWriter implements CarbonFactDataWriter {
       CarbonUtil
           .copyCarbonDataFileToCarbonStorePath(indexFileName, model.getCarbonDataDirectoryPath(),
               fileSizeInBytes);
+      FileFactory.deleteFile(indexFileName, FileFactory.getFileType(indexFileName));
     }
   }
 
@@ -470,6 +477,7 @@ public abstract class AbstractFactDataWriter implements CarbonFactDataWriter {
     public Void call() throws Exception {
       CarbonUtil.copyCarbonDataFileToCarbonStorePath(fileName, model.getCarbonDataDirectoryPath(),
           fileSizeInBytes);
+      FileFactory.deleteFile(fileName, FileFactory.getFileType(fileName));
       return null;
     }
   }

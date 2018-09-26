@@ -68,7 +68,7 @@ class CarbonDataFrameWriter(sqlContext: SQLContext, val dataFrame: DataFrame) {
       case IntegerType => CarbonType.INT.getName
       case ShortType => CarbonType.SHORT.getName
       case LongType => CarbonType.LONG.getName
-      case FloatType => CarbonType.DOUBLE.getName
+      case FloatType => CarbonType.FLOAT.getName
       case DoubleType => CarbonType.DOUBLE.getName
       case TimestampType => CarbonType.TIMESTAMP.getName
       case DateType => CarbonType.DATE.getName
@@ -81,10 +81,12 @@ class CarbonDataFrameWriter(sqlContext: SQLContext, val dataFrame: DataFrame) {
   private def makeCreateTableString(schema: StructType, options: CarbonOption): String = {
     val property = Map(
       "SORT_COLUMNS" -> options.sortColumns,
+      "SORT_SCOPE" -> options.sortScope,
       "DICTIONARY_INCLUDE" -> options.dictionaryInclude,
       "DICTIONARY_EXCLUDE" -> options.dictionaryExclude,
       "LONG_STRING_COLUMNS" -> options.longStringColumns,
       "TABLE_BLOCKSIZE" -> options.tableBlockSize,
+      "TABLE_BLOCKLET_SIZE" -> options.tableBlockletSize,
       "STREAMING" -> Option(options.isStreaming.toString)
     ).filter(_._2.isDefined)
       .map(property => s"'${property._1}' = '${property._2.get}'").mkString(",")

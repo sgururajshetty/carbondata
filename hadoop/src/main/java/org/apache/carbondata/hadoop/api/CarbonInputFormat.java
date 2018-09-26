@@ -21,23 +21,21 @@ import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
-import java.util.ArrayList;
-import java.util.BitSet;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 
 import org.apache.carbondata.core.constants.CarbonCommonConstants;
 import org.apache.carbondata.core.constants.CarbonCommonConstantsInternal;
 import org.apache.carbondata.core.datamap.DataMapChooser;
 import org.apache.carbondata.core.datamap.DataMapJob;
+import org.apache.carbondata.core.datamap.DataMapStoreManager;
 import org.apache.carbondata.core.datamap.DataMapUtil;
 import org.apache.carbondata.core.datamap.Segment;
+import org.apache.carbondata.core.datamap.TableDataMap;
 import org.apache.carbondata.core.datamap.dev.expr.DataMapExprWrapper;
 import org.apache.carbondata.core.datamap.dev.expr.DataMapWrapperSimpleInfo;
 import org.apache.carbondata.core.exception.InvalidConfigurationException;
 import org.apache.carbondata.core.indexstore.ExtendedBlocklet;
 import org.apache.carbondata.core.indexstore.PartitionSpec;
-import org.apache.carbondata.core.indexstore.blockletindex.BlockletDataMapFactory;
 import org.apache.carbondata.core.metadata.AbsoluteTableIdentifier;
 import org.apache.carbondata.core.metadata.ColumnarFormatVersion;
 import org.apache.carbondata.core.metadata.schema.PartitionInfo;
@@ -47,6 +45,7 @@ import org.apache.carbondata.core.metadata.schema.table.TableInfo;
 import org.apache.carbondata.core.metadata.schema.table.column.ColumnSchema;
 import org.apache.carbondata.core.mutate.UpdateVO;
 import org.apache.carbondata.core.profiler.ExplainCollector;
+import org.apache.carbondata.core.readcommitter.ReadCommittedScope;
 import org.apache.carbondata.core.scan.expression.Expression;
 import org.apache.carbondata.core.scan.filter.resolver.FilterResolverIntf;
 import org.apache.carbondata.core.scan.model.QueryModel;
@@ -115,10 +114,14 @@ public abstract class CarbonInputFormat<T> extends FileInputFormat<Void, T> {
   private static final String PARTITIONS_TO_PRUNE =
       "mapreduce.input.carboninputformat.partitions.to.prune";
   private static final String FGDATAMAP_PRUNING = "mapreduce.input.carboninputformat.fgdatamap";
+  private static final String READ_COMMITTED_SCOPE =
+      "mapreduce.input.carboninputformat.read.committed.scope";
 
   // record segment number and hit blocks
   protected int numSegments = 0;
   protected int numStreamSegments = 0;
+  protected int numStreamFiles = 0;
+  protected int hitedStreamFiles = 0;
   protected int numBlocks = 0;
 
   public int getNumSegments() {
@@ -127,6 +130,14 @@ public abstract class CarbonInputFormat<T> extends FileInputFormat<Void, T> {
 
   public int getNumStreamSegments() {
     return numStreamSegments;
+  }
+
+  public int getNumStreamFiles() {
+    return numStreamFiles;
+  }
+
+  public int getHitedStreamFiles() {
+    return hitedStreamFiles;
   }
 
   public int getNumBlocks() {
@@ -337,6 +348,29 @@ m filterExpression
     }
   }
 
+  public static void setReadCommittedScope(Configuration configuration,
+      ReadCommittedScope committedScope) {
+    if (committedScope == null) {
+      return;
+    }
+    try {
+      String subFoldersString = ObjectSerializationUtil.convertObjectToString(committedScope);
+      configuration.set(READ_COMMITTED_SCOPE, subFoldersString);
+    } catch (Exception e) {
+      throw new RuntimeException(
+          "Error while setting committedScope information to Job" + committedScope, e);
+    }
+  }
+
+  public static ReadCommittedScope getReadCommittedScope(Configuration configuration)
+      throws IOException {
+    String subFoldersString = configuration.get(READ_COMMITTED_SCOPE);
+    if (subFoldersString != null) {
+      return (ReadCommittedScope) ObjectSerializationUtil.convertStringToObject(subFoldersString);
+    }
+    return null;
+  }
+
   /**
    * {@inheritDoc}
    * Configurations FileInputFormat.INPUT_DIR
@@ -365,7 +399,7 @@ m filterExpression
    * get data blocks of given segment
    */
   protected List<CarbonInputSplit> getDataBlocksOfSegment(JobContext job, CarbonTable carbonTable,
-      FilterResolverIntf resolver, BitSet matchedPartitions, List<Segment> segmentIds,
+      Expression expression, BitSet matchedPartitions, List<Segment> segmentIds,
       PartitionInfo partitionInfo, List<Integer> oldPartitionIdList) throws IOException {
 
     QueryStatisticsRecorder recorder = CarbonTimeStatisticsFactory.createDriverRecorder();
@@ -375,7 +409,7 @@ m filterExpression
     TokenCache.obtainTokensForNamenodes(job.getCredentials(),
         new Path[] { new Path(carbonTable.getTablePath()) }, job.getConfiguration());
     List<ExtendedBlocklet> prunedBlocklets =
-        getPrunedBlocklets(job, carbonTable, resolver, segmentIds);
+        getPrunedBlocklets(job, carbonTable, expression, segmentIds);
 
     List<CarbonInputSplit> resultFilteredBlocks = new ArrayList<>();
     int partitionIndex = 0;
@@ -418,14 +452,29 @@ m filterExpression
   }
 
   /**
+   * for explain command
+   * get number of block by counting distinct file path of blocklets
+   */
+  private int getBlockCount(List<ExtendedBlocklet> blocklets) {
+    Set<String> filepaths = new HashSet<>();
+    for (ExtendedBlocklet blocklet: blocklets) {
+      filepaths.add(blocklet.getPath());
+    }
+    return filepaths.size();
+  }
+
+  /**
    * Prune the blocklets using the filter expression with available datamaps.
    * First pruned with default blocklet datamap, then pruned with CG and FG datamaps
    */
   private List<ExtendedBlocklet> getPrunedBlocklets(JobContext job, CarbonTable carbonTable,
-      FilterResolverIntf resolver, List<Segment> segmentIds) throws IOException {
+      Expression expression, List<Segment> segmentIds) throws IOException {
     ExplainCollector.addPruningInfo(carbonTable.getTableName());
-    if (resolver != null) {
-      ExplainCollector.setFilterStatement(resolver.getFilterExpression().getStatement());
+    FilterResolverIntf resolver = null;
+    if (expression != null) {
+      carbonTable.processFilterExpression(expression, null, null);
+      resolver = CarbonTable.resolveFilter(expression, carbonTable.getAbsoluteTableIdentifier());
+      ExplainCollector.setFilterStatement(expression.getStatement());
     } else {
       ExplainCollector.setFilterStatement("none");
     }
@@ -436,13 +485,16 @@ m filterExpression
     DataMapJob dataMapJob = DataMapUtil.getDataMapJob(job.getConfiguration());
     List<PartitionSpec> partitionsToPrune = getPartitionsToPrune(job.getConfiguration());
     // First prune using default datamap on driver side.
-    DataMapExprWrapper dataMapExprWrapper = DataMapChooser
-        .getDefaultDataMap(getOrCreateCarbonTable(job.getConfiguration()), resolver);
-    List<ExtendedBlocklet> prunedBlocklets =
-        dataMapExprWrapper.prune(segmentIds, partitionsToPrune);
+    TableDataMap defaultDataMap = DataMapStoreManager.getInstance().getDefaultDataMap(carbonTable);
+    List<ExtendedBlocklet> prunedBlocklets = null;
+    if (carbonTable.isTransactionalTable()) {
+      prunedBlocklets = defaultDataMap.prune(segmentIds, resolver, partitionsToPrune);
+    } else {
+      prunedBlocklets = defaultDataMap.prune(segmentIds, expression, partitionsToPrune);
+    }
 
-    ExplainCollector.recordDefaultDataMapPruning(
-        DataMapWrapperSimpleInfo.fromDataMapWrapper(dataMapExprWrapper), prunedBlocklets.size());
+    ExplainCollector.setDefaultDataMapPruningBlockHit(getBlockCount(prunedBlocklets));
+
     if (prunedBlocklets.size() == 0) {
       return prunedBlocklets;
     }
@@ -467,7 +519,7 @@ m filterExpression
       prunedBlocklets = intersectFilteredBlocklets(carbonTable, prunedBlocklets, cgPrunedBlocklets);
       ExplainCollector.recordCGDataMapPruning(
           DataMapWrapperSimpleInfo.fromDataMapWrapper(cgDataMapExprWrapper),
-          prunedBlocklets.size());
+          prunedBlocklets.size(), getBlockCount(prunedBlocklets));
     }
 
     if (prunedBlocklets.size() == 0) {
@@ -487,7 +539,7 @@ m filterExpression
             fgPrunedBlocklets);
         ExplainCollector.recordFGDataMapPruning(
             DataMapWrapperSimpleInfo.fromDataMapWrapper(fgDataMapExprWrapper),
-            prunedBlocklets.size());
+            prunedBlocklets.size(), getBlockCount(prunedBlocklets));
       }
     }
     return prunedBlocklets;
@@ -497,8 +549,7 @@ m filterExpression
       List<ExtendedBlocklet> previousDataMapPrunedBlocklets,
       List<ExtendedBlocklet> otherDataMapPrunedBlocklets) {
     List<ExtendedBlocklet> prunedBlocklets = null;
-    if (BlockletDataMapUtil.isCacheLevelBlock(
-        carbonTable, BlockletDataMapFactory.CACHE_LEVEL_BLOCKLET)) {
+    if (BlockletDataMapUtil.isCacheLevelBlock(carbonTable)) {
       prunedBlocklets = new ArrayList<>();
       for (ExtendedBlocklet otherBlocklet : otherDataMapPrunedBlocklets) {
         if (previousDataMapPrunedBlocklets.contains(otherBlocklet)) {
@@ -557,7 +608,8 @@ m filterExpression
     Configuration configuration = taskAttemptContext.getConfiguration();
     QueryModel queryModel = createQueryModel(inputSplit, taskAttemptContext);
     CarbonReadSupport<T> readSupport = getReadSupportClass(configuration);
-    return new CarbonRecordReader<T>(queryModel, readSupport);
+    return new CarbonRecordReader<T>(queryModel, readSupport,
+        taskAttemptContext.getConfiguration());
   }
 
   public QueryModel createQueryModel(InputSplit inputSplit, TaskAttemptContext taskAttemptContext)
@@ -723,9 +775,20 @@ m filterExpression
   public String[] projectAllColumns(CarbonTable carbonTable) {
     List<ColumnSchema> colList = carbonTable.getTableInfo().getFactTable().getListOfColumns();
     List<String> projectColumn = new ArrayList<>();
+    // childCount will recursively count the number of children for any parent
+    // complex type and add just the parent column name while skipping the child columns.
+    int childDimCount = 0;
     for (ColumnSchema cols : colList) {
       if (cols.getSchemaOrdinal() != -1) {
-        projectColumn.add(cols.getColumnUniqueId());
+        if (childDimCount == 0) {
+          projectColumn.add(cols.getColumnName());
+        }
+        if (childDimCount > 0) {
+          childDimCount--;
+        }
+        if (cols.getDataType().isComplexType()) {
+          childDimCount += cols.getNumberOfChild();
+        }
       }
     }
     String[] projectionColumns = new String[projectColumn.size()];

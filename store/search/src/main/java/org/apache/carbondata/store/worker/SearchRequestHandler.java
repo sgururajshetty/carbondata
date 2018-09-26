@@ -33,6 +33,7 @@ import org.apache.carbondata.core.datamap.Segment;
 import org.apache.carbondata.core.datamap.dev.expr.DataMapDistributableWrapper;
 import org.apache.carbondata.core.datamap.dev.expr.DataMapExprWrapper;
 import org.apache.carbondata.core.datastore.block.TableBlockInfo;
+import org.apache.carbondata.core.datastore.impl.FileFactory;
 import org.apache.carbondata.core.datastore.row.CarbonRow;
 import org.apache.carbondata.core.indexstore.ExtendedBlocklet;
 import org.apache.carbondata.core.metadata.schema.table.CarbonTable;
@@ -54,6 +55,7 @@ import org.apache.carbondata.hadoop.CarbonMultiBlockSplit;
 import org.apache.carbondata.hadoop.CarbonRecordReader;
 import org.apache.carbondata.hadoop.readsupport.impl.CarbonRowReadSupport;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.search.SearchRequest;
 import org.apache.spark.search.SearchResult;
 import org.apache.spark.search.ShutdownRequest;
@@ -135,7 +137,7 @@ public class SearchRequestHandler {
 
     // In search mode, reader will read multiple blocks by using a thread pool
     CarbonRecordReader<CarbonRow> reader =
-        new CarbonRecordReader<>(queryModel, new CarbonRowReadSupport());
+        new CarbonRecordReader<>(queryModel, new CarbonRowReadSupport(), new Configuration());
 
     // read all rows by the reader
     List<CarbonRow> rows = new LinkedList<>();
@@ -175,7 +177,7 @@ public class SearchRequestHandler {
       if (uniqueSegments.get(segmentId) == null) {
         segments.add(Segment.toSegment(segmentId,
             new TableStatusReadCommittedScope(table.getAbsoluteTableIdentifier(),
-                loadMetadataDetails)));
+                loadMetadataDetails, FileFactory.getConfiguration())));
         uniqueSegments.put(segmentId, 1);
       } else {
         uniqueSegments.put(segmentId, uniqueSegments.get(segmentId) + 1);

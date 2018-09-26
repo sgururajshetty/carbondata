@@ -33,6 +33,7 @@ import org.apache.avro.generic.{GenericDatumReader, GenericDatumWriter, GenericR
 import org.apache.avro.io.{DecoderFactory, Encoder}
 import org.apache.commons.lang.CharEncoding
 import org.apache.commons.lang3.RandomStringUtils
+import org.apache.hadoop.conf.Configuration
 import org.junit.Assert
 
 import org.apache.carbondata.core.constants.CarbonCommonConstants
@@ -69,31 +70,25 @@ class SDKwriterTestCase extends QueryTest with BeforeAndAfterEach {
   }
 
   def buildTestDataSingleFile(): Any = {
-    buildTestData(3, false, null)
+    buildTestData(3, null)
   }
 
   def buildTestDataWithBadRecordForce(writerPath: String): Any = {
     var options = Map("bAd_RECords_action" -> "FORCE").asJava
-    buildTestData(3, false, options)
+    buildTestData(3, options)
   }
 
   def buildTestDataWithBadRecordFail(writerPath: String): Any = {
     var options = Map("bAd_RECords_action" -> "FAIL").asJava
-    buildTestData(15001, false, options)
+    buildTestData(15001, options)
   }
 
-  def buildTestData(rows: Int,
-      persistSchema: Boolean,
-      options: util.Map[String, String]): Any = {
-    buildTestData(rows, persistSchema, options, List("name"), writerPath)
+  def buildTestData(rows: Int, options: util.Map[String, String]): Any = {
+    buildTestData(rows, options, List("name"), writerPath)
   }
 
   // prepare sdk writer output
-  def buildTestData(rows: Int,
-      persistSchema: Boolean,
-      options: util.Map[String, String],
-      sortColumns: List[String],
-      writerPath: String): Any = {
+  def buildTestData(rows: Int, options: util.Map[String, String], sortColumns: List[String], writerPath: String): Any = {
     val schema = new StringBuilder()
       .append("[ \n")
       .append("   {\"name\":\"string\"},\n")
@@ -105,30 +100,18 @@ class SDKwriterTestCase extends QueryTest with BeforeAndAfterEach {
     try {
       val builder = CarbonWriter.builder()
       val writer =
-        if (persistSchema) {
-          builder.persistSchemaFile(true)
-          builder
+        if (options != null) {
+          builder.outputPath(writerPath)
             .sortBy(sortColumns.toArray)
-            .outputPath(writerPath)
-            .isTransactionalTable(false)
-            .uniqueIdentifier(System.currentTimeMillis)
-            .buildWriterForCSVInput(Schema.parseJson(schema))
+            .uniqueIdentifier(
+              System.currentTimeMillis).withBlockSize(2).withLoadOptions(options)
+            .withCsvInput(Schema.parseJson(schema)).build()
         } else {
-          if (options != null) {
-            builder.outputPath(writerPath)
-              .isTransactionalTable(false)
-              .sortBy(sortColumns.toArray)
-              .uniqueIdentifier(
-                System.currentTimeMillis).withBlockSize(2).withLoadOptions(options)
-              .buildWriterForCSVInput(Schema.parseJson(schema))
-          } else {
-            builder.outputPath(writerPath)
-              .isTransactionalTable(false)
-              .sortBy(sortColumns.toArray)
-              .uniqueIdentifier(
-                System.currentTimeMillis).withBlockSize(2)
-              .buildWriterForCSVInput(Schema.parseJson(schema))
-          }
+          builder.outputPath(writerPath)
+            .sortBy(sortColumns.toArray)
+            .uniqueIdentifier(
+              System.currentTimeMillis).withBlockSize(2)
+            .withCsvInput(Schema.parseJson(schema)).build()
         }
       var i = 0
       while (i < rows) {
@@ -154,12 +137,12 @@ class SDKwriterTestCase extends QueryTest with BeforeAndAfterEach {
 
   def buildTestDataWithBadRecordIgnore(writerPath: String): Any = {
     var options = Map("bAd_RECords_action" -> "IGNORE").asJava
-    buildTestData(3, false, options)
+    buildTestData(3, options)
   }
 
   def buildTestDataWithBadRecordRedirect(writerPath: String): Any = {
     var options = Map("bAd_RECords_action" -> "REDIRECT").asJava
-    buildTestData(3, false, options)
+    buildTestData(3, options)
   }
 
   def deleteFile(path: String, extension: String): Unit = {
@@ -543,8 +526,8 @@ class SDKwriterTestCase extends QueryTest with BeforeAndAfterEach {
 
     try {
       val writer = CarbonWriter.builder
-        .outputPath(writerPath).isTransactionalTable(false)
-        .uniqueIdentifier(System.currentTimeMillis()).buildWriterForAvroInput(nn)
+        .outputPath(writerPath)
+        .uniqueIdentifier(System.currentTimeMillis()).withAvroInput(nn).build()
       var i = 0
       while (i < rows) {
         writer.write(record)
@@ -742,11 +725,70 @@ class SDKwriterTestCase extends QueryTest with BeforeAndAfterEach {
       .append("]")
       .toString()
     val builder = CarbonWriter.builder()
-    val writer = builder.outputPath(writerPath)
-      .buildWriterForCSVInput(Schema.parseJson(schema))
+    val writer = builder.outputPath(writerPath).withCsvInput(Schema.parseJson(schema)).build()
 
     for (i <- 0 until 5) {
       writer.write(Array[String](s"name_$i", RandomStringUtils.randomAlphabetic(33000), i.toString))
+    }
+    writer.close()
+
+    assert(FileFactory.getCarbonFile(writerPath).exists)
+    sql("DROP TABLE IF EXISTS sdkTable")
+    sql(s"CREATE EXTERNAL TABLE sdkTable STORED BY 'carbondata' LOCATION '$writerPath'")
+    checkAnswer(sql("select count(*) from sdkTable"), Seq(Row(5)))
+  }
+
+  test("Test sdk with longstring with more than 2MB length") {
+    // here we specify the longstring column as varchar
+    val schema = new StringBuilder()
+      .append("[ \n")
+      .append("   {\"name\":\"string\"},\n")
+      .append("   {\"address\":\"varchar\"},\n")
+      .append("   {\"age\":\"int\"}\n")
+      .append("]")
+      .toString()
+    val builder = CarbonWriter.builder()
+    val writer = builder.outputPath(writerPath).withCsvInput(Schema.parseJson(schema)).build()
+    val varCharLen = 4000000
+    for (i <- 0 until 3) {
+      writer
+        .write(Array[String](s"name_$i",
+          RandomStringUtils.randomAlphabetic(varCharLen),
+          i.toString))
+    }
+    writer.close()
+
+    assert(FileFactory.getCarbonFile(writerPath).exists)
+    sql("DROP TABLE IF EXISTS sdkTable")
+    sql(s"CREATE EXTERNAL TABLE sdkTable STORED BY 'carbondata' LOCATION '$writerPath'")
+    checkAnswer(sql("select count(*) from sdkTable"), Seq(Row(3)))
+
+    val op = sql("select address from sdkTable limit 1").collectAsList()
+    assert(op.get(0).getString(0).length == varCharLen)
+  }
+
+  test("Test sdk with longstring with empty sort column and some direct dictionary columns") {
+    // here we specify the longstring column as varchar
+    val schema = new StringBuilder()
+      .append("[ \n")
+      .append("   {\"address\":\"varchar\"},\n")
+      .append("   {\"date1\":\"date\"},\n")
+      .append("   {\"date2\":\"date\"},\n")
+      .append("   {\"age\":\"int\"}\n")
+      .append("]")
+      .toString()
+    val builder = CarbonWriter.builder()
+    val writer = builder
+      .outputPath(writerPath)
+      .sortBy(Array[String]())
+      .withCsvInput(Schema.parseJson(schema)).build()
+
+    for (i <- 0 until 5) {
+      writer
+        .write(Array[String](RandomStringUtils.randomAlphabetic(40000),
+          "1999-12-01",
+          "1998-12-01",
+          i.toString))
     }
     writer.close()
 

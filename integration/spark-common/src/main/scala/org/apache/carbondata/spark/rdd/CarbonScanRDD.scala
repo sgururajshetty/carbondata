@@ -41,8 +41,10 @@ import org.apache.spark.sql.util.SparkSQLUtil.sessionState
 import org.apache.spark.util.{CarbonReflectionUtils, TaskCompletionListener}
 
 import org.apache.carbondata.common.logging.LogServiceFactory
+import org.apache.carbondata.converter.SparkDataTypeConverterImpl
 import org.apache.carbondata.core.constants.{CarbonCommonConstants, CarbonCommonConstantsInternal}
 import org.apache.carbondata.core.datastore.block.Distributable
+import org.apache.carbondata.core.datastore.impl.FileFactory
 import org.apache.carbondata.core.indexstore.PartitionSpec
 import org.apache.carbondata.core.metadata.AbsoluteTableIdentifier
 import org.apache.carbondata.core.metadata.schema.table.TableInfo
@@ -59,8 +61,8 @@ import org.apache.carbondata.hadoop.readsupport.CarbonReadSupport
 import org.apache.carbondata.hadoop.util.CarbonInputFormatUtil
 import org.apache.carbondata.processing.util.CarbonLoaderUtil
 import org.apache.carbondata.spark.InitInputMetrics
-import org.apache.carbondata.spark.util.{SparkDataTypeConverterImpl, Util}
-import org.apache.carbondata.streaming.{CarbonStreamInputFormat, CarbonStreamRecordReader}
+import org.apache.carbondata.spark.util.Util
+import org.apache.carbondata.streaming.CarbonStreamInputFormat
 
 /**
  * This RDD is used to perform query on CarbonData file. Before sending tasks to scan
@@ -68,17 +70,17 @@ import org.apache.carbondata.streaming.{CarbonStreamInputFormat, CarbonStreamRec
  * level filtering in driver side.
  */
 class CarbonScanRDD[T: ClassTag](
-    @transient spark: SparkSession,
+    @transient private val spark: SparkSession,
     val columnProjection: CarbonProjection,
     var filterExpression: Expression,
     identifier: AbsoluteTableIdentifier,
-    @transient serializedTableInfo: Array[Byte],
-    @transient tableInfo: TableInfo,
+    @transient private val serializedTableInfo: Array[Byte],
+    @transient private val tableInfo: TableInfo,
     inputMetricsStats: InitInputMetrics,
     @transient val partitionNames: Seq[PartitionSpec],
     val dataTypeConverterClz: Class[_ <: DataTypeConverter] = classOf[SparkDataTypeConverterImpl],
     val readSupportClz: Class[_ <: CarbonReadSupport[_]] = SparkReadSupport.readSupportClass)
-  extends CarbonRDDWithTableInfo[T](spark.sparkContext, Nil, serializedTableInfo) {
+  extends CarbonRDDWithTableInfo[T](spark, Nil, serializedTableInfo) {
 
   private val queryId = sparkContext.getConf.get("queryId", System.nanoTime() + "")
   private val jobTrackerId: String = {
@@ -91,7 +93,7 @@ class CarbonScanRDD[T: ClassTag](
 
   @transient val LOGGER = LogServiceFactory.getLogService(this.getClass.getName)
 
-  override def getPartitions: Array[Partition] = {
+  override def internalGetPartitions: Array[Partition] = {
     val startTime = System.currentTimeMillis()
     var partitions: Array[Partition] = Array.empty[Partition]
     var getSplitsStartTime: Long = -1
@@ -104,7 +106,7 @@ class CarbonScanRDD[T: ClassTag](
     var numBlocks = 0
 
     try {
-      val conf = new Configuration()
+      val conf = FileFactory.getConfiguration
       val jobConf = new JobConf(conf)
       SparkHadoopUtil.get.addCredentials(jobConf)
       val job = Job.getInstance(jobConf)
@@ -163,14 +165,18 @@ class CarbonScanRDD[T: ClassTag](
         if (batchPartitions.isEmpty) {
           partitions = streamPartitions.toArray
         } else {
-          logInfo(
-            s"""
-               | Identified no.of Streaming Blocks: ${ streamPartitions.size },
-          """.stripMargin)
           // should keep the order by index of partition
           batchPartitions.appendAll(streamPartitions)
           partitions = batchPartitions.toArray
         }
+        logInfo(
+          s"""
+             | Identified no.of.streaming splits/tasks: ${ streamPartitions.size },
+             | no.of.streaming files: ${format.getHitedStreamFiles},
+             | no.of.total streaming files: ${format.getNumStreamFiles},
+             | no.of.total streaming segement: ${format.getNumStreamSegments}
+          """.stripMargin)
+
       }
       partitions
     } finally {
@@ -404,7 +410,7 @@ class CarbonScanRDD[T: ClassTag](
     val executionId = context.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
     val taskId = split.index
     val attemptId = new TaskAttemptID(jobTrackerId, id, TaskType.MAP, split.index, 0)
-    val attemptContext = new TaskAttemptContextImpl(new Configuration(), attemptId)
+    val attemptContext = new TaskAttemptContextImpl(FileFactory.getConfiguration, attemptId)
     val format = prepareInputFormatForExecutor(attemptContext.getConfiguration)
     val inputSplit = split.asInstanceOf[CarbonSparkPartition].split.value
     TaskMetricsMap.getInstance().registerThreadCallback()
@@ -419,13 +425,13 @@ class CarbonScanRDD[T: ClassTag](
           // create record reader for row format
           DataTypeUtil.setDataTypeConverter(dataTypeConverterClz.newInstance())
           val inputFormat = new CarbonStreamInputFormat
-          val streamReader = inputFormat.createRecordReader(inputSplit, attemptContext)
-            .asInstanceOf[CarbonStreamRecordReader]
-          streamReader.setVectorReader(vectorReader)
-          streamReader.setInputMetricsStats(inputMetricsStats)
+          inputFormat.setIsVectorReader(vectorReader)
+          inputFormat.setInputMetricsStats(inputMetricsStats)
           model.setStatisticsRecorder(
             CarbonTimeStatisticsFactory.createExecutorRecorder(model.getQueryId))
-          streamReader.setQueryModel(model)
+          inputFormat.setModel(model)
+          val streamReader = inputFormat.createRecordReader(inputSplit, attemptContext)
+            .asInstanceOf[RecordReader[Void, Object]]
           streamReader
         case _ =>
           // create record reader for CarbonData file format
@@ -435,14 +441,16 @@ class CarbonScanRDD[T: ClassTag](
               "true")
             if (carbonRecordReader == null) {
               new CarbonRecordReader(model,
-                format.getReadSupportClass(attemptContext.getConfiguration), inputMetricsStats)
+                format.getReadSupportClass(attemptContext.getConfiguration),
+                inputMetricsStats,
+                attemptContext.getConfiguration)
             } else {
               carbonRecordReader
             }
           } else {
             new CarbonRecordReader(model,
               format.getReadSupportClass(attemptContext.getConfiguration),
-              inputMetricsStats)
+              inputMetricsStats, attemptContext.getConfiguration)
           }
       }
 

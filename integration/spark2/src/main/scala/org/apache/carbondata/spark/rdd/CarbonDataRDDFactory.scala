@@ -51,6 +51,7 @@ import org.apache.carbondata.core.constants.CarbonCommonConstants
 import org.apache.carbondata.core.datamap.{DataMapStoreManager, Segment}
 import org.apache.carbondata.core.datamap.status.DataMapStatusManager
 import org.apache.carbondata.core.datastore.block.{Distributable, TableBlockInfo}
+import org.apache.carbondata.core.datastore.compression.CompressorFactory
 import org.apache.carbondata.core.datastore.filesystem.CarbonFile
 import org.apache.carbondata.core.datastore.impl.FileFactory
 import org.apache.carbondata.core.dictionary.server.DictionaryServer
@@ -62,9 +63,10 @@ import org.apache.carbondata.core.metadata.schema.table.CarbonTable
 import org.apache.carbondata.core.mutate.CarbonUpdateUtil
 import org.apache.carbondata.core.scan.partition.PartitionUtil
 import org.apache.carbondata.core.statusmanager.{LoadMetadataDetails, SegmentStatus, SegmentStatusManager}
-import org.apache.carbondata.core.util.{ByteUtil, CarbonProperties, CarbonUtil}
+import org.apache.carbondata.core.util.{ByteUtil, CarbonProperties, CarbonUtil, ThreadLocalSessionInfo}
 import org.apache.carbondata.core.util.path.CarbonTablePath
 import org.apache.carbondata.events.{OperationContext, OperationListenerBus}
+import org.apache.carbondata.hadoop.util.CarbonInputFormatUtil
 import org.apache.carbondata.processing.exception.DataLoadingException
 import org.apache.carbondata.processing.loading.FailureCauses
 import org.apache.carbondata.processing.loading.csvinput.{BlockDetails, CSVInputFormat, StringArrayWritable}
@@ -287,6 +289,10 @@ object CarbonDataRDDFactory {
     loadModel.readAndSetLoadMetadataDetails()
     val loadStartTime = CarbonUpdateUtil.readCurrentTime()
     loadModel.setFactTimeStamp(loadStartTime)
+    val columnCompressor = table.getTableInfo.getFactTable.getTableProperties.asScala
+      .getOrElse(CarbonCommonConstants.COMPRESSOR,
+        CompressorFactory.getInstance().getCompressor.getName)
+    loadModel.setColumnCompressor(columnCompressor)
     loadModel
   }
 
@@ -329,7 +335,8 @@ object CarbonDataRDDFactory {
             dataFrame,
             carbonLoadModel,
             updateModel,
-            carbonTable)
+            carbonTable,
+            hadoopConf)
           res.foreach { resultOfSeg =>
             resultOfSeg.foreach { resultOfBlock =>
               if (resultOfBlock._2._1.getSegmentStatus == SegmentStatus.LOAD_FAILURE) {
@@ -434,7 +441,7 @@ object CarbonDataRDDFactory {
         res.foreach { resultOfSeg =>
           resultSize = resultSize + resultOfSeg.size
           resultOfSeg.foreach { resultOfBlock =>
-            segmentDetails.add(new Segment(resultOfBlock._2._1.getLoadName, null))
+            segmentDetails.add(new Segment(resultOfBlock._2._1.getLoadName))
           }
         }
         val segmentFiles = updateSegmentFiles(carbonTable, segmentDetails, updateModel.get)
@@ -680,7 +687,8 @@ object CarbonDataRDDFactory {
       dataFrame: Option[DataFrame],
       carbonLoadModel: CarbonLoadModel,
       updateModel: Option[UpdateTableModel],
-      carbonTable: CarbonTable): Array[List[(String, (LoadMetadataDetails, ExecutionErrors))]] = {
+      carbonTable: CarbonTable,
+      hadoopConf: Configuration): Array[List[(String, (LoadMetadataDetails, ExecutionErrors))]] = {
     val segmentUpdateParallelism = CarbonProperties.getInstance().getParallelismForSegmentUpdate
 
     val updateRdd = dataFrame.get.rdd
@@ -720,7 +728,9 @@ object CarbonDataRDDFactory {
 
       // because partitionId=segmentIdIndex*parallelism+RandomPart and RandomPart<parallelism,
       // so segmentIdIndex=partitionId/parallelism, this has been verified.
+      val conf = sqlContext.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
       partitionByRdd.map(_._2).mapPartitions { partition =>
+        ThreadLocalSessionInfo.setConfigurationToCurrentThread(conf.value.value)
         val partitionId = TaskContext.getPartitionId()
         val segIdIndex = partitionId / segmentUpdateParallelism
         val randomPart = partitionId - segIdIndex * segmentUpdateParallelism
@@ -1070,7 +1080,7 @@ object CarbonDataRDDFactory {
     try {
       val rdd = repartitionInputData(sqlContext, dataFrame, carbonLoadModel, hadoopConf)
       new PartitionTableDataLoaderRDD(
-        sqlContext.sparkContext,
+        sqlContext.sparkSession,
         new DataLoadResultImpl(),
         carbonLoadModel,
         rdd
@@ -1099,14 +1109,14 @@ object CarbonDataRDDFactory {
       val nodes = DistributionUtil.ensureExecutorsByNumberAndGetNodeList(
         nodeNumOfData,
         sqlContext.sparkContext)
-      val newRdd = new DataLoadCoalescedRDD[Row](rdd, nodes.toArray.distinct)
+      val newRdd = new DataLoadCoalescedRDD[Row](sqlContext.sparkSession, rdd, nodes.toArray
+        .distinct)
 
       new NewDataFrameLoaderRDD(
-        sqlContext.sparkContext,
+        sqlContext.sparkSession,
         new DataLoadResultImpl(),
         carbonLoadModel,
-        newRdd,
-        sqlContext.sparkContext.hadoopConfiguration
+        newRdd
       ).collect()
     } catch {
       case ex: Exception =>
@@ -1207,11 +1217,10 @@ object CarbonDataRDDFactory {
     }.toArray
 
     new NewCarbonDataLoadRDD(
-      sqlContext.sparkContext,
+      sqlContext.sparkSession,
       new DataLoadResultImpl(),
       carbonLoadModel,
-      blocksGroupBy,
-      hadoopConf
+      blocksGroupBy
     ).collect()
   }
 }

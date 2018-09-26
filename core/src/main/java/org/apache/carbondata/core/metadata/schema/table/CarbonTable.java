@@ -36,7 +36,6 @@ import org.apache.carbondata.core.datamap.TableDataMap;
 import org.apache.carbondata.core.datamap.dev.DataMapFactory;
 import org.apache.carbondata.core.datastore.block.SegmentProperties;
 import org.apache.carbondata.core.datastore.filesystem.CarbonFile;
-import org.apache.carbondata.core.datastore.filesystem.CarbonFileFilter;
 import org.apache.carbondata.core.datastore.impl.FileFactory;
 import org.apache.carbondata.core.features.TableOperation;
 import org.apache.carbondata.core.metadata.AbsoluteTableIdentifier;
@@ -63,6 +62,8 @@ import org.apache.carbondata.core.util.path.CarbonTablePath;
 
 import static org.apache.carbondata.core.metadata.schema.datamap.DataMapClassProvider.MV;
 import static org.apache.carbondata.core.util.CarbonUtil.thriftColumnSchemaToWrapperColumnSchema;
+
+import org.apache.hadoop.conf.Configuration;
 
 /**
  * Mapping class for Carbon actual table
@@ -237,24 +238,15 @@ public class CarbonTable implements Serializable {
 
   public static CarbonTable buildTable(
       String tablePath,
-      String tableName) throws IOException {
+      String tableName,
+      Configuration configuration) throws IOException {
     TableInfo tableInfoInfer = CarbonUtil.buildDummyTableInfo(tablePath, "null", "null");
-    CarbonFile[] carbonFiles = FileFactory
-        .getCarbonFile(tablePath)
-        .listFiles(new CarbonFileFilter() {
-          @Override
-          public boolean accept(CarbonFile file) {
-            if (file == null) {
-              return false;
-            }
-            return file.getName().endsWith("carbonindex");
-          }
-        });
-    if (carbonFiles == null || carbonFiles.length < 1) {
+    CarbonFile carbonFile = getFirstIndexFile(FileFactory.getCarbonFile(tablePath, configuration));
+    if (carbonFile == null) {
       throw new RuntimeException("Carbon index file not exists.");
     }
     org.apache.carbondata.format.TableInfo tableInfo = CarbonUtil
-        .inferSchemaFromIndexFile(carbonFiles[0].getPath(), tableName);
+        .inferSchemaFromIndexFile(carbonFile.getPath(), tableName);
     List<ColumnSchema> columnSchemaList = new ArrayList<ColumnSchema>();
     for (org.apache.carbondata.format.ColumnSchema thriftColumnSchema : tableInfo
         .getFact_table().getTable_columns()) {
@@ -266,6 +258,24 @@ public class CarbonTable implements Serializable {
     }
     tableInfoInfer.getFactTable().setListOfColumns(columnSchemaList);
     return CarbonTable.buildFromTableInfo(tableInfoInfer);
+  }
+
+  private static CarbonFile getFirstIndexFile(CarbonFile tablePath) {
+    CarbonFile[] carbonFiles = tablePath.listFiles();
+    for (CarbonFile carbonFile : carbonFiles) {
+      if (carbonFile.isDirectory()) {
+        // if the list has directories that doesn't contain index files,
+        // continue checking other files/directories in the list.
+        if (getFirstIndexFile(carbonFile) == null) {
+          continue;
+        } else {
+          return getFirstIndexFile(carbonFile);
+        }
+      } else if (carbonFile.getName().endsWith(CarbonTablePath.INDEX_FILE_EXT)) {
+        return carbonFile;
+      }
+    }
+    return null;
   }
 
   public static CarbonTable buildDummyTable(String tablePath) throws IOException {
@@ -1016,7 +1026,10 @@ public class CarbonTable implements Serializable {
 
   public void processFilterExpression(Expression filterExpression,
       boolean[] isFilterDimensions, boolean[] isFilterMeasures) {
-    QueryModel.processFilterExpression(this, filterExpression, isFilterDimensions,
+    QueryModel.FilterProcessVO processVO =
+        new QueryModel.FilterProcessVO(getDimensionByTableName(getTableName()),
+            getMeasureByTableName(getTableName()), getImplicitDimensionByTableName(getTableName()));
+    QueryModel.processFilterExpression(processVO, filterExpression, isFilterDimensions,
         isFilterMeasures);
 
     if (null != filterExpression) {
@@ -1030,11 +1043,11 @@ public class CarbonTable implements Serializable {
   /**
    * Resolve the filter expression.
    */
-  public FilterResolverIntf resolveFilter(Expression filterExpression) {
+  public static FilterResolverIntf resolveFilter(Expression filterExpression,
+      AbsoluteTableIdentifier identifier) {
     try {
       FilterExpressionProcessor filterExpressionProcessor = new FilterExpressionProcessor();
-      return filterExpressionProcessor.getFilterResolver(
-          filterExpression, getAbsoluteTableIdentifier());
+      return filterExpressionProcessor.getFilterResolver(filterExpression, identifier);
     } catch (Exception e) {
       throw new RuntimeException("Error while resolving filter expression", e);
     }
@@ -1179,6 +1192,14 @@ public class CarbonTable implements Serializable {
       table.setLocalDictionaryEnabled(Boolean.parseBoolean("false"));
       tableProperties.put(CarbonCommonConstants.LOCAL_DICTIONARY_ENABLE, "false");
     }
+  }
+
+  /**
+   * Return the format value defined in table properties
+   * @return String as per table properties, null if not defined
+   */
+  public String getFormat() {
+    return getTableInfo().getFactTable().getTableProperties().get("format");
   }
 
   /**

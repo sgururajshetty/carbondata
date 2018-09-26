@@ -17,10 +17,10 @@
 
 package org.apache.carbondata.processing.sort.sortdata;
 
+import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
@@ -35,6 +35,7 @@ import org.apache.carbondata.core.datastore.impl.FileFactory;
 import org.apache.carbondata.core.util.CarbonProperties;
 import org.apache.carbondata.core.util.CarbonThreadFactory;
 import org.apache.carbondata.core.util.CarbonUtil;
+import org.apache.carbondata.core.util.ReUsableByteArrayDataOutputStream;
 import org.apache.carbondata.processing.loading.sort.SortStepRowHandler;
 import org.apache.carbondata.processing.sort.exception.CarbonSortKeyAndGroupByException;
 import org.apache.carbondata.processing.util.CarbonDataProcessorUtil;
@@ -68,7 +69,7 @@ public class SortDataRows {
 
   private SortParameters parameters;
   private SortStepRowHandler sortStepRowHandler;
-  private ThreadLocal<ByteBuffer> rowBuffer;
+  private ThreadLocal<ReUsableByteArrayDataOutputStream> reUsableByteArrayDataOutputStream;
   private int sortBufferSize;
 
   private SortIntermediateFileMerger intermediateFileMerger;
@@ -86,10 +87,10 @@ public class SortDataRows {
     this.sortBufferSize = Math.max(parameters.getSortBufferSize(), batchSize);
     // observer of writing file in thread
     this.threadStatusObserver = new ThreadStatusObserver();
-    this.rowBuffer = new ThreadLocal<ByteBuffer>() {
-      @Override protected ByteBuffer initialValue() {
-        byte[] backedArray = new byte[2 * 1024 * 1024];
-        return ByteBuffer.wrap(backedArray);
+    this.reUsableByteArrayDataOutputStream = new ThreadLocal<ReUsableByteArrayDataOutputStream>() {
+      @Override protected ReUsableByteArrayDataOutputStream initialValue() {
+        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+        return new ReUsableByteArrayDataOutputStream(byteStream);
       }
     };
   }
@@ -203,7 +204,8 @@ public class SortDataRows {
       toSort = new Object[entryCount][];
       System.arraycopy(recordHolderList, 0, toSort, 0, entryCount);
       if (parameters.getNumberOfNoDictSortColumns() > 0) {
-        Arrays.sort(toSort, new NewRowComparator(parameters.getNoDictionarySortColumn()));
+        Arrays.sort(toSort, new NewRowComparator(parameters.getNoDictionarySortColumn(),
+            parameters.getNoDictDataType()));
       } else {
         Arrays.sort(toSort, new NewRowComparatorForNormalDims(parameters.getNumberOfSortColumns()));
       }
@@ -238,7 +240,7 @@ public class SortDataRows {
       stream.writeInt(entryCountLocal);
       for (int i = 0; i < entryCountLocal; i++) {
         sortStepRowHandler.writeRawRowAsIntermediateSortTempRowToOutputStream(
-            recordHolderList[i], stream, rowBuffer.get());
+            recordHolderList[i], stream, reUsableByteArrayDataOutputStream.get());
       }
     } catch (IOException e) {
       throw new CarbonSortKeyAndGroupByException("Problem while writing the file", e);
@@ -315,7 +317,8 @@ public class SortDataRows {
         long startTime = System.currentTimeMillis();
         if (parameters.getNumberOfNoDictSortColumns() > 0) {
           Arrays.sort(recordHolderArray,
-              new NewRowComparator(parameters.getNoDictionarySortColumn()));
+              new NewRowComparator(parameters.getNoDictionarySortColumn(),
+                  parameters.getNoDictDataType()));
         } else {
           Arrays.sort(recordHolderArray,
               new NewRowComparatorForNormalDims(parameters.getNumberOfSortColumns()));

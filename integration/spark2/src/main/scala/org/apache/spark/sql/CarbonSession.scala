@@ -40,7 +40,6 @@ import org.apache.carbondata.common.annotations.InterfaceAudience
 import org.apache.carbondata.common.logging.{LogService, LogServiceFactory}
 import org.apache.carbondata.core.constants.CarbonCommonConstants
 import org.apache.carbondata.core.util.{CarbonProperties, CarbonSessionInfo, ThreadLocalSessionInfo}
-import org.apache.carbondata.hadoop.util.CarbonInputFormatUtil
 import org.apache.carbondata.store.SparkCarbonStore
 import org.apache.carbondata.streaming.CarbonStreamingQueryListener
 
@@ -51,7 +50,7 @@ import org.apache.carbondata.streaming.CarbonStreamingQueryListener
  */
 class CarbonSession(@transient val sc: SparkContext,
     @transient private val existingSharedState: Option[SharedState],
-    @transient useHiveMetaStore: Boolean = true
+    @transient private val useHiveMetaStore: Boolean = true
 ) extends SparkSession(sc) { self =>
 
   def this(sc: SparkContext) {
@@ -357,12 +356,7 @@ object CarbonSession {
         // Register a successfully instantiated context to the singleton. This should be at the
         // end of the class definition so that the singleton is updated only if there is no
         // exception in the construction of the instance.
-        sparkContext.addSparkListener(new SparkListener {
-          override def onApplicationEnd(applicationEnd: SparkListenerApplicationEnd): Unit = {
-            SparkSession.setDefaultSession(null)
-            SparkSession.sqlListener.set(null)
-          }
-        })
+        CarbonToSparkAdapater.addSparkListener(sparkContext)
         session.streams.addListener(new CarbonStreamingQueryListener(session))
       }
 
@@ -432,6 +426,8 @@ object CarbonSession {
     }
     // preserve thread parameters across call
     ThreadLocalSessionInfo.setCarbonSessionInfo(carbonSessionInfo)
+    ThreadLocalSessionInfo
+      .setConfigurationToCurrentThread(sparkSession.sessionState.newHadoopConf())
   }
 
 }

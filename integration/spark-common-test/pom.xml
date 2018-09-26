@@ -112,12 +112,6 @@
   <dependencies>
     <dependency>
       <groupId>org.apache.carbondata</groupId>
-      <artifactId>carbondata-spark-common</artifactId>
-      <version>${project.version}</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.carbondata</groupId>
       <artifactId>carbondata-spark2</artifactId>
       <version>${project.version}</version>
       <scope>test</scope>
@@ -141,9 +135,21 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <!-- spark catalyst added runtime dependency on spark-core,so
+      while executing the testcases spark-core should be present else it
+      will fail to execute -->
       <groupId>org.apache.spark</groupId>
-      <artifactId>spark-hive-thriftserver_${scala.binary.version}</artifactId>
+      <artifactId>spark-core_${scala.binary.version}</artifactId>
+      <version>${spark.version}</version>
       <scope>test</scope>
+      <exclusions>
+        <!-- need to Exclude Avro jar from this project,spark core is using
+        the version 1.7.4 which is not compatible with Carbon -->
+        <exclusion>
+          <groupId>org.apache.avro</groupId>
+          <artifactId>avro</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>junit</groupId>

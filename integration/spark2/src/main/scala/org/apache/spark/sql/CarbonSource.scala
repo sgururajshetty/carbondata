@@ -324,12 +324,9 @@ object CarbonSource {
       tableDesc.copy(storage = updatedFormat)
     } else {
       val tableInfo = CarbonUtil.convertGsonToTableInfo(properties.asJava)
-      val isExternal = properties.getOrElse("isExternal", "false")
-      val isTransactionalTable = properties.getOrElse("isTransactional", "true")
-        .contains("true")
+      val isTransactionalTable = properties.getOrElse("isTransactional", "true").contains("true")
       tableInfo.setTransactionalTable(isTransactionalTable)
       if (isTransactionalTable && !metaStore.isReadFromHiveMetaStore) {
-        CarbonInputFormatUtil.setS3Configurations(sparkSession.sessionState.newHadoopConf())
         // save to disk
         metaStore.saveToDisk(tableInfo, properties("tablePath"))
         // remove schema string from map as we don't store carbon schema to hive metastore
@@ -351,10 +348,7 @@ object CarbonSource {
       query: Option[LogicalPlan]): Map[String, String] = {
     val model = createTableInfoFromParams(properties, dataSchema, identifier, query, sparkSession)
     val tableInfo: TableInfo = TableNewProcessor(model)
-    val isExternal = properties.getOrElse("isExternal", "false")
-    val isTransactionalTable = properties.getOrElse("isTransactional", "true")
-      .contains("true")
-    val tablePath = properties.getOrElse("path", "")
+    val isTransactionalTable = properties.getOrElse("isTransactional", "true").contains("true")
     tableInfo.setTablePath(identifier.getTablePath)
     tableInfo.setTransactionalTable(isTransactionalTable)
     tableInfo.setDatabaseName(identifier.getDatabaseName)

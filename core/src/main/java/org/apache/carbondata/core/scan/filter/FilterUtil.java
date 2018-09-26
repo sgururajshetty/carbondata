@@ -397,7 +397,7 @@ public final class FilterUtil {
     int columnIndexInMinMaxByteArray = -1;
     int columnCounter = 0;
     for (CarbonColumn cachedColumn : carbonDimensionsToBeCached) {
-      if (cachedColumn.getColumnId().equals(filterColumn.getColumnId())) {
+      if (cachedColumn.getColumnId().equalsIgnoreCase(filterColumn.getColumnId())) {
         columnIndexInMinMaxByteArray = columnCounter;
         break;
       }
@@ -645,8 +645,9 @@ public final class FilterUtil {
           continue;
         }
 
-        filterValuesList
-            .add(DataTypeUtil.getMeasureValueBasedOnDataType(result, dataType, carbonMeasure));
+        filterValuesList.add(DataTypeUtil
+            .getMeasureValueBasedOnDataType(result, dataType, carbonMeasure.getScale(),
+                carbonMeasure.getPrecision()));
 
       }
     } catch (Throwable ex) {
@@ -664,6 +665,27 @@ public final class FilterUtil {
 
     }
     return columnFilterInfo;
+  }
+
+  public static DataType getMeasureDataType(
+      MeasureColumnResolvedFilterInfo msrColumnEvaluatorInfo) {
+    if (msrColumnEvaluatorInfo.getType() == DataTypes.BOOLEAN) {
+      return DataTypes.BOOLEAN;
+    } else if (msrColumnEvaluatorInfo.getType() == DataTypes.SHORT) {
+      return DataTypes.SHORT;
+    } else if (msrColumnEvaluatorInfo.getType() == DataTypes.INT) {
+      return DataTypes.INT;
+    } else if (msrColumnEvaluatorInfo.getType() == DataTypes.LONG) {
+      return DataTypes.LONG;
+    } else if (msrColumnEvaluatorInfo.getType() == DataTypes.FLOAT) {
+      return DataTypes.FLOAT;
+    } else if (msrColumnEvaluatorInfo.getType() == DataTypes.BYTE) {
+      return DataTypes.BYTE;
+    } else if (DataTypes.isDecimal(msrColumnEvaluatorInfo.getType())) {
+      return DataTypes.createDefaultDecimalType();
+    } else {
+      return DataTypes.DOUBLE;
+    }
   }
 
   /**
@@ -1922,12 +1944,21 @@ public final class FilterUtil {
    * @param dimensionColumnPage
    * @param bitSet
    */
-  public static void removeNullValues(DimensionColumnPage dimensionColumnPage,
-      BitSet bitSet, byte[] defaultValue) {
+  public static void removeNullValues(DimensionColumnPage dimensionColumnPage, BitSet bitSet,
+      byte[] defaultValue) {
     if (!bitSet.isEmpty()) {
-      for (int i = bitSet.nextSetBit(0); i >= 0; i = bitSet.nextSetBit(i + 1)) {
-        if (dimensionColumnPage.compareTo(i, defaultValue) == 0) {
-          bitSet.flip(i);
+      if (null != dimensionColumnPage.getNullBits() && !dimensionColumnPage.getNullBits().isEmpty()
+          && !dimensionColumnPage.isExplicitSorted() && !dimensionColumnPage.isAdaptiveEncoded()) {
+        for (int i = bitSet.nextSetBit(0); i >= 0; i = bitSet.nextSetBit(i + 1)) {
+          if (dimensionColumnPage.getNullBits().get(i)) {
+            bitSet.flip(i);
+          }
+        }
+      } else {
+        for (int i = bitSet.nextSetBit(0); i >= 0; i = bitSet.nextSetBit(i + 1)) {
+          if (dimensionColumnPage.compareTo(i, defaultValue) == 0) {
+            bitSet.flip(i);
+          }
         }
       }
     }
@@ -2178,4 +2209,41 @@ public final class FilterUtil {
     }
     return filterExecuter;
   }
+
+  /**
+   * This method is used to compare the filter value with min and max values.
+   * This is used in case of filter queries on no dictionary column.
+   *
+   * @param filterValue
+   * @param minMaxBytes
+   * @param carbonDimension
+   * @param isMin
+   * @return
+   */
+  public static int compareValues(byte[] filterValue, byte[] minMaxBytes,
+      CarbonDimension carbonDimension, boolean isMin) {
+    DataType dataType = carbonDimension.getDataType();
+    if (DataTypeUtil.isPrimitiveColumn(dataType) && !carbonDimension
+        .hasEncoding(Encoding.DICTIONARY)) {
+      Object value =
+          DataTypeUtil.getDataBasedOnDataTypeForNoDictionaryColumn(minMaxBytes, dataType);
+      // filter value should be in range of max and min value i.e
+      // max>filtervalue>min
+      // so filter-max should be negative
+      Object data = DataTypeUtil.getDataBasedOnDataTypeForNoDictionaryColumn(filterValue, dataType);
+      SerializableComparator comparator = Comparator.getComparator(dataType);
+      if (isMin) {
+        return comparator.compare(value, data);
+      } else {
+        return comparator.compare(data, value);
+      }
+    } else {
+      if (isMin) {
+        return ByteUtil.UnsafeComparer.INSTANCE.compareTo(minMaxBytes, filterValue);
+      } else {
+        return ByteUtil.UnsafeComparer.INSTANCE.compareTo(filterValue, minMaxBytes);
+      }
+    }
+  }
+
 }

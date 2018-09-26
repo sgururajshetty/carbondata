@@ -35,7 +35,6 @@ import org.apache.carbondata.core.cache.dictionary.Dictionary;
 import org.apache.carbondata.core.cache.dictionary.DictionaryColumnUniqueIdentifier;
 import org.apache.carbondata.core.constants.CarbonCommonConstants;
 import org.apache.carbondata.core.datastore.compression.Compressor;
-import org.apache.carbondata.core.datastore.compression.CompressorFactory;
 import org.apache.carbondata.core.keygenerator.KeyGenException;
 import org.apache.carbondata.core.keygenerator.KeyGenerator;
 import org.apache.carbondata.core.metadata.AbsoluteTableIdentifier;
@@ -48,7 +47,9 @@ import org.apache.carbondata.core.metadata.schema.table.CarbonTable;
 import org.apache.carbondata.core.metadata.schema.table.RelationIdentifier;
 import org.apache.carbondata.core.metadata.schema.table.column.CarbonDimension;
 import org.apache.carbondata.core.metadata.schema.table.column.CarbonMeasure;
+import org.apache.carbondata.core.metadata.schema.table.column.ColumnSchema;
 import org.apache.carbondata.core.scan.complextypes.ArrayQueryType;
+import org.apache.carbondata.core.scan.complextypes.MapQueryType;
 import org.apache.carbondata.core.scan.complextypes.PrimitiveQueryType;
 import org.apache.carbondata.core.scan.complextypes.StructQueryType;
 import org.apache.carbondata.core.scan.expression.ColumnExpression;
@@ -57,7 +58,10 @@ import org.apache.carbondata.core.scan.filter.GenericQueryType;
 import org.apache.carbondata.core.scan.filter.resolver.FilterResolverIntf;
 import org.apache.carbondata.core.scan.model.ProjectionDimension;
 import org.apache.carbondata.core.scan.model.ProjectionMeasure;
+import org.apache.carbondata.core.scan.result.vector.CarbonColumnVector;
+import org.apache.carbondata.core.util.ByteUtil;
 import org.apache.carbondata.core.util.CarbonUtil;
+import org.apache.carbondata.core.util.DataTypeUtil;
 
 import org.apache.commons.lang3.ArrayUtils;
 
@@ -310,7 +314,8 @@ public class QueryUtil {
       if (queryDimensions.getListOfChildDimensions().get(j).getNumberOfChild() > 0) {
         getChildDimensionDictionaryDetail(queryDimensions.getListOfChildDimensions().get(j),
             dictionaryDimensionFromQuery);
-      } else if (!CarbonUtil.hasEncoding(encodingList, Encoding.DIRECT_DICTIONARY)) {
+      } else if (CarbonUtil.hasEncoding(encodingList, Encoding.DICTIONARY) && !CarbonUtil
+          .hasEncoding(encodingList, Encoding.DIRECT_DICTIONARY)) {
         dictionaryDimensionFromQuery
             .add(queryDimensions.getListOfChildDimensions().get(j).getColumnId());
       }
@@ -587,6 +592,9 @@ public class QueryUtil {
       parentQueryType =
           new StructQueryType(dimension.getColName(), dimension.getColName(),
               dimensionToBlockIndexMap.get(dimension.getOrdinal()));
+    } else if (DataTypes.isMapType(dimension.getDataType())) {
+      parentQueryType =
+          new MapQueryType(dimension.getColName(), dimension.getColName(), parentBlockIndex);
     } else {
       throw new UnsupportedOperationException(dimension.getDataType().getName() +
           " is not supported");
@@ -608,6 +616,10 @@ public class QueryUtil {
       } else if (DataTypes.isStructType(dataType)) {
         parentQueryType.addChildren(
             new StructQueryType(dimension.getListOfChildDimensions().get(i).getColName(),
+                dimension.getColName(), ++parentBlockIndex));
+      } else if (DataTypes.isMapType(dataType)) {
+        parentQueryType.addChildren(
+            new MapQueryType(dimension.getListOfChildDimensions().get(i).getColName(),
                 dimension.getColName(), ++parentBlockIndex));
       } else {
         boolean isDirectDictionary = CarbonUtil
@@ -707,18 +719,100 @@ public class QueryUtil {
    * Below method will be used to convert the thrift presence meta to wrapper
    * presence meta
    *
-   * @param presentMetadataThrift
    * @return wrapper presence meta
    */
   public static BitSet getNullBitSet(
-      org.apache.carbondata.format.PresenceMeta presentMetadataThrift) {
-    Compressor compressor = CompressorFactory.getInstance().getCompressor();
+      org.apache.carbondata.format.PresenceMeta presentMetadataThrift, Compressor compressor) {
     final byte[] present_bit_stream = presentMetadataThrift.getPresent_bit_stream();
     if (null != present_bit_stream) {
-      return BitSet
-          .valueOf(compressor.unCompressByte(present_bit_stream));
+      return BitSet.valueOf(compressor.unCompressByte(present_bit_stream));
     } else {
       return new BitSet(1);
+    }
+  }
+
+  /**
+   * In case of non transactional table just set columnuniqueid as columnName to support
+   * backward compatabiity. non transactional tables column uniqueid is always equal to
+   * columnname
+   */
+  public static void updateColumnUniqueIdForNonTransactionTable(List<ColumnSchema> columnSchemas) {
+    for (ColumnSchema columnSchema : columnSchemas) {
+      // In case of complex types only add the name after removing parent names.
+      int index = columnSchema.getColumnName().lastIndexOf(".");
+      if (index >= 0) {
+        columnSchema.setColumnUniqueId(columnSchema.getColumnName()
+            .substring(index + 1, columnSchema.getColumnName().length()));
+      } else {
+        columnSchema.setColumnUniqueId(columnSchema.getColumnName());
+      }
+    }
+  }
+
+  /**
+   * Put the data to vector
+   *
+   * @param vector
+   * @param value
+   * @param vectorRow
+   * @param length
+   */
+  public static void putDataToVector(CarbonColumnVector vector, byte[] value, int vectorRow,
+      int length) {
+    DataType dt = vector.getType();
+    if ((!(dt == DataTypes.STRING) && length == 0) || ByteUtil.UnsafeComparer.INSTANCE
+        .equals(CarbonCommonConstants.MEMBER_DEFAULT_VAL_ARRAY, 0,
+            CarbonCommonConstants.MEMBER_DEFAULT_VAL_ARRAY.length, value, 0, length)) {
+      vector.putNull(vectorRow);
+    } else {
+      if (dt == DataTypes.STRING) {
+        vector.putBytes(vectorRow, 0, length, value);
+      } else if (dt == DataTypes.BOOLEAN) {
+        vector.putBoolean(vectorRow, ByteUtil.toBoolean(value[0]));
+      } else if (dt == DataTypes.BYTE) {
+        vector.putByte(vectorRow,value[0]);
+      } else if (dt == DataTypes.SHORT) {
+        vector.putShort(vectorRow, ByteUtil.toXorShort(value, 0, length));
+      } else if (dt == DataTypes.INT) {
+        vector.putInt(vectorRow, ByteUtil.toXorInt(value, 0, length));
+      } else if (dt == DataTypes.LONG) {
+        vector.putLong(vectorRow, DataTypeUtil
+            .getDataBasedOnRestructuredDataType(value, vector.getBlockDataType(), 0, length));
+      } else if (dt == DataTypes.TIMESTAMP) {
+        vector.putLong(vectorRow, ByteUtil.toXorLong(value, 0, length) * 1000L);
+      }
+    }
+  }
+
+  /**
+   * Put the data to vector
+   *
+   * @param vector
+   * @param value
+   * @param vectorRow
+   */
+  public static void putDataToVector(CarbonColumnVector vector, Object value, int vectorRow) {
+    DataType dt = vector.getType();
+    if (value.equals(CarbonCommonConstants.MEMBER_DEFAULT_VAL_ARRAY) || value
+        .equals(CarbonCommonConstants.EMPTY_BYTE_ARRAY)) {
+      vector.putNull(vectorRow);
+    } else {
+      if (dt == DataTypes.STRING) {
+        vector.putBytes(vectorRow, (byte[]) value);
+      } else if (dt == DataTypes.BOOLEAN) {
+        vector.putBoolean(vectorRow, (boolean) value);
+      } else if (dt == DataTypes.BYTE) {
+        vector.putByte(vectorRow, (byte) value);
+      } else if (dt == DataTypes.SHORT) {
+        vector.putShort(vectorRow, (short) value);
+      } else if (dt == DataTypes.INT) {
+        vector.putInt(vectorRow, (int) value);
+      } else if (dt == DataTypes.LONG) {
+        vector.putLong(vectorRow,
+            DataTypeUtil.getDataBasedOnRestructuredDataType(value, vector.getBlockDataType()));
+      } else if (dt == DataTypes.TIMESTAMP) {
+        vector.putLong(vectorRow, (long) value * 1000L);
+      }
     }
   }
 }

@@ -19,7 +19,6 @@ package org.apache.carbondata.core.datastore.chunk.reader.dimension;
 import org.apache.carbondata.core.constants.CarbonCommonConstants;
 import org.apache.carbondata.core.datastore.chunk.reader.DimensionColumnChunkReader;
 import org.apache.carbondata.core.datastore.compression.Compressor;
-import org.apache.carbondata.core.datastore.compression.CompressorFactory;
 import org.apache.carbondata.core.keygenerator.mdkey.NumberCompressor;
 import org.apache.carbondata.core.util.CarbonProperties;
 
@@ -32,7 +31,7 @@ public abstract class AbstractChunkReader implements DimensionColumnChunkReader 
   /**
    * compressor will be used to uncompress the data
    */
-  protected static final Compressor COMPRESSOR = CompressorFactory.getInstance().getCompressor();
+  protected Compressor compressor;
 
   /**
    * size of the each column value
@@ -80,19 +79,4 @@ public abstract class AbstractChunkReader implements DimensionColumnChunkReader 
     this.numberOfRows = numberOfRows;
   }
 
-  /**
-   * Below method will be used to create the inverted index reverse
-   * this will be used to point to actual data in the chunk
-   *
-   * @param invertedIndex inverted index
-   * @return reverse inverted index
-   */
-  protected int[] getInvertedReverseIndex(int[] invertedIndex) {
-    int[] columnIndexTemp = new int[invertedIndex.length];
-
-    for (int i = 0; i < invertedIndex.length; i++) {
-      columnIndexTemp[invertedIndex[i]] = i;
-    }
-    return columnIndexTemp;
-  }
 }

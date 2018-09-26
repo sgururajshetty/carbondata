@@ -23,11 +23,11 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.text.SimpleDateFormat;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.carbondata.common.logging.LogService;
 import org.apache.carbondata.common.logging.LogServiceFactory;
@@ -41,6 +41,7 @@ import static org.apache.carbondata.core.constants.CarbonCommonConstants.CARBON_
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.CARBON_DATA_FILE_VERSION;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.CARBON_DATE_FORMAT;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.CARBON_DYNAMIC_ALLOCATION_SCHEDULER_TIMEOUT;
+import static org.apache.carbondata.core.constants.CarbonCommonConstants.CARBON_MINMAX_ALLOWED_BYTE_COUNT;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.CARBON_PREFETCH_BUFFERSIZE;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.CARBON_SCHEDULER_MIN_REGISTERED_RESOURCES_RATIO;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.CARBON_SCHEDULER_MIN_REGISTERED_RESOURCES_RATIO_DEFAULT;
@@ -62,8 +63,6 @@ import static org.apache.carbondata.core.constants.CarbonCommonConstants.ENABLE_
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.ENABLE_VECTOR_READER;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.HANDOFF_SIZE;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.LOCK_TYPE;
-import static org.apache.carbondata.core.constants.CarbonCommonConstants.NUM_CORES;
-import static org.apache.carbondata.core.constants.CarbonCommonConstants.NUM_CORES_BLOCK_SORT;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.SORT_INTERMEDIATE_FILES_LIMIT;
 import static org.apache.carbondata.core.constants.CarbonCommonConstants.SORT_SIZE;
 import static org.apache.carbondata.core.constants.CarbonLoadOptionConstants.CARBON_LOAD_SORT_MEMORY_SPILL_PERCENTAGE;
@@ -94,7 +93,7 @@ public final class CarbonProperties {
   /**
    * It is purely for testing
    */
-  private Map<String, String> addedProperty = new HashMap<>();
+  private Map<String, String> addedProperty = new ConcurrentHashMap<>();
 
   /**
    * Private constructor this will call load properties method to load all the
@@ -124,12 +123,6 @@ public final class CarbonProperties {
     switch (key) {
       case BLOCKLET_SIZE:
         validateBlockletSize();
-        break;
-      case NUM_CORES:
-        validateNumCores();
-        break;
-      case NUM_CORES_BLOCK_SORT:
-        validateNumCoresBlockSort();
         break;
       case SORT_SIZE:
         validateSortSize();
@@ -202,6 +195,9 @@ public final class CarbonProperties {
       case CARBON_LOAD_SORT_MEMORY_SPILL_PERCENTAGE:
         validateSortMemorySpillPercentage();
         break;
+      case CARBON_MINMAX_ALLOWED_BYTE_COUNT:
+        validateStringCharacterLimit();
+        break;
       // TODO : Validation for carbon.lock.type should be handled for addProperty flow
       default:
         // none
@@ -235,8 +231,6 @@ public final class CarbonProperties {
    */
   private void validateAndLoadDefaultProperties() {
     validateBlockletSize();
-    validateNumCores();
-    validateNumCoresBlockSort();
     validateSortSize();
     validateCarbonDataFileVersion();
     validateDynamicSchedulerTimeOut();
@@ -268,6 +262,7 @@ public final class CarbonProperties {
     validateSortStorageMemory();
     validateEnableQueryStatistics();
     validateSortMemorySpillPercentage();
+    validateStringCharacterLimit();
   }
 
   /**
@@ -407,7 +402,7 @@ public final class CarbonProperties {
    * @param lockTypeConfigured
    */
   private void validateAndConfigureLockType(String lockTypeConfigured) {
-    Configuration configuration = new Configuration(true);
+    Configuration configuration = FileFactory.getConfiguration();
     String defaultFs = configuration.get("fs.defaultFS");
     if (null != defaultFs && (defaultFs.startsWith(CarbonCommonConstants.HDFSURL_PREFIX)
         || defaultFs.startsWith(CarbonCommonConstants.VIEWFSURL_PREFIX) || defaultFs
@@ -650,58 +645,6 @@ public final class CarbonProperties {
           + CarbonCommonConstants.BLOCKLET_SIZE_DEFAULT_VAL);
       carbonProperties.setProperty(BLOCKLET_SIZE,
           CarbonCommonConstants.BLOCKLET_SIZE_DEFAULT_VAL);
-    }
-  }
-
-  /**
-   * This method validates the number cores specified
-   */
-  private void validateNumCores() {
-    String numCoresStr = carbonProperties
-        .getProperty(NUM_CORES, CarbonCommonConstants.NUM_CORES_DEFAULT_VAL);
-    try {
-      int numCores = Integer.parseInt(numCoresStr);
-
-      if (numCores < CarbonCommonConstants.NUM_CORES_MIN_VAL
-          || numCores > CarbonCommonConstants.NUM_CORES_MAX_VAL) {
-        LOGGER.info(
-            "The num Cores  value \"" + numCoresStr + "\" is invalid. Using the default value \""
-                + CarbonCommonConstants.NUM_CORES_DEFAULT_VAL);
-        carbonProperties.setProperty(NUM_CORES,
-            CarbonCommonConstants.NUM_CORES_DEFAULT_VAL);
-      }
-    } catch (NumberFormatException e) {
-      LOGGER.info(
-          "The num Cores  value \"" + numCoresStr + "\" is invalid. Using the default value \""
-              + CarbonCommonConstants.NUM_CORES_DEFAULT_VAL);
-      carbonProperties.setProperty(NUM_CORES,
-          CarbonCommonConstants.NUM_CORES_DEFAULT_VAL);
-    }
-  }
-
-  /**
-   * This method validates the number cores specified for mdk block sort
-   */
-  private void validateNumCoresBlockSort() {
-    String numCoresStr = carbonProperties.getProperty(NUM_CORES_BLOCK_SORT,
-        CarbonCommonConstants.NUM_CORES_BLOCK_SORT_DEFAULT_VAL);
-    try {
-      int numCores = Integer.parseInt(numCoresStr);
-
-      if (numCores < CarbonCommonConstants.NUM_CORES_BLOCK_SORT_MIN_VAL
-          || numCores > CarbonCommonConstants.NUM_CORES_BLOCK_SORT_MAX_VAL) {
-        LOGGER.info("The num cores value \"" + numCoresStr
-            + "\" for block sort is invalid. Using the default value \""
-            + CarbonCommonConstants.NUM_CORES_BLOCK_SORT_DEFAULT_VAL);
-        carbonProperties.setProperty(NUM_CORES_BLOCK_SORT,
-            CarbonCommonConstants.NUM_CORES_BLOCK_SORT_DEFAULT_VAL);
-      }
-    } catch (NumberFormatException e) {
-      LOGGER.info("The num cores value \"" + numCoresStr
-          + "\" for block sort is invalid. Using the default value \""
-          + CarbonCommonConstants.NUM_CORES_BLOCK_SORT_DEFAULT_VAL);
-      carbonProperties.setProperty(NUM_CORES_BLOCK_SORT,
-          CarbonCommonConstants.NUM_CORES_BLOCK_SORT_DEFAULT_VAL);
     }
   }
 
@@ -1356,73 +1299,27 @@ public final class CarbonProperties {
   }
 
   private void validateSortMemorySizeInMB() {
-    int sortMemorySizeInMBDefault =
-        Integer.parseInt(CarbonCommonConstants.IN_MEMORY_FOR_SORT_DATA_IN_MB_DEFAULT);
-    int sortMemorySizeInMB = 0;
     try {
-      sortMemorySizeInMB = Integer.parseInt(
-          carbonProperties.getProperty(CarbonCommonConstants.IN_MEMORY_FOR_SORT_DATA_IN_MB));
-    } catch (NumberFormatException e) {
-      LOGGER.warn(
-          "The specified value for property " + CarbonCommonConstants.IN_MEMORY_FOR_SORT_DATA_IN_MB
-              + "is Invalid." + " Taking the default value."
-              + CarbonCommonConstants.IN_MEMORY_FOR_SORT_DATA_IN_MB_DEFAULT);
-      sortMemorySizeInMB = sortMemorySizeInMBDefault;
-    }
-    if (sortMemorySizeInMB < sortMemorySizeInMBDefault) {
-      LOGGER.warn(
-          "The specified value for property " + CarbonCommonConstants.IN_MEMORY_FOR_SORT_DATA_IN_MB
-              + "is less than default value." + ". Taking the default value."
-              + CarbonCommonConstants.IN_MEMORY_FOR_SORT_DATA_IN_MB_DEFAULT);
-      sortMemorySizeInMB = sortMemorySizeInMBDefault;
-    }
-    String unsafeWorkingMemoryString =
-        carbonProperties.getProperty(CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB);
-    String unsafeSortStorageMemoryString =
-        carbonProperties.getProperty(CarbonCommonConstants.IN_MEMORY_STORAGE_FOR_SORTED_DATA_IN_MB);
-    int workingMemory = 512;
-    int sortStorageMemory;
-    if (null == unsafeWorkingMemoryString && null == unsafeSortStorageMemoryString) {
-      workingMemory = workingMemory > ((sortMemorySizeInMB * 20) / 100) ?
-          workingMemory :
-          ((sortMemorySizeInMB * 20) / 100);
-      sortStorageMemory = sortMemorySizeInMB - workingMemory;
-      carbonProperties
-          .setProperty(CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB, workingMemory + "");
+      int unsafeSortStorageMemoryString = Integer.parseInt(carbonProperties
+          .getProperty(CarbonCommonConstants.IN_MEMORY_STORAGE_FOR_SORTED_DATA_IN_MB));
       carbonProperties.setProperty(CarbonCommonConstants.IN_MEMORY_STORAGE_FOR_SORTED_DATA_IN_MB,
-          sortStorageMemory + "");
-    } else if (null != unsafeWorkingMemoryString && null == unsafeSortStorageMemoryString) {
-      carbonProperties.setProperty(CarbonCommonConstants.IN_MEMORY_STORAGE_FOR_SORTED_DATA_IN_MB,
-          sortMemorySizeInMB + "");
-    } else if (null == unsafeWorkingMemoryString && null != unsafeSortStorageMemoryString) {
-      carbonProperties
-          .setProperty(CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB, sortMemorySizeInMB + "");
+          unsafeSortStorageMemoryString + "");
+    } catch (NumberFormatException ne) {
+      LOGGER.warn("The specified value for property "
+          + CarbonCommonConstants.IN_MEMORY_STORAGE_FOR_SORTED_DATA_IN_MB + "is invalid.");
     }
   }
 
   private void validateWorkingMemory() {
-    int unsafeWorkingMemoryDefault =
-        Integer.parseInt(CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB_DEFAULT);
-    int unsafeWorkingMemory = 0;
     try {
-      unsafeWorkingMemory = Integer.parseInt(
+      int unsafeWorkingMemory = Integer.parseInt(
           carbonProperties.getProperty(CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB));
+      carbonProperties
+          .setProperty(CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB, unsafeWorkingMemory + "");
     } catch (NumberFormatException e) {
       LOGGER.warn("The specified value for property "
-          + CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB_DEFAULT + "is invalid."
-          + " Taking the default value."
-          + CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB_DEFAULT);
-      unsafeWorkingMemory = unsafeWorkingMemoryDefault;
+          + CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB_DEFAULT + "is invalid.");
     }
-    if (unsafeWorkingMemory < unsafeWorkingMemoryDefault) {
-      LOGGER.warn("The specified value for property "
-          + CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB_DEFAULT
-          + "is less than the default value." + ". Taking the default value."
-          + CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB_DEFAULT);
-      unsafeWorkingMemory = unsafeWorkingMemoryDefault;
-    }
-    carbonProperties
-        .setProperty(CarbonCommonConstants.UNSAFE_WORKING_MEMORY_IN_MB, unsafeWorkingMemory + "");
   }
 
   private void validateSortStorageMemory() {
@@ -1657,6 +1554,38 @@ public final class CarbonProperties {
       carbonProperties.setProperty(
           CARBON_LOAD_SORT_MEMORY_SPILL_PERCENTAGE,
           CarbonLoadOptionConstants.CARBON_LOAD_SORT_MEMORY_SPILL_PERCENTAGE_DEFAULT);
+    }
+  }
+
+  /**
+   * This method validates the allowed character limit for storing min/max for string type
+   */
+  private void validateStringCharacterLimit() {
+    int allowedCharactersLimit = 0;
+    try {
+      allowedCharactersLimit = Integer.parseInt(carbonProperties
+          .getProperty(CARBON_MINMAX_ALLOWED_BYTE_COUNT,
+              CarbonCommonConstants.CARBON_MINMAX_ALLOWED_BYTE_COUNT_DEFAULT));
+      if (allowedCharactersLimit < CarbonCommonConstants.CARBON_MINMAX_ALLOWED_BYTE_COUNT_MIN
+          || allowedCharactersLimit
+          > CarbonCommonConstants.CARBON_MINMAX_ALLOWED_BYTE_COUNT_MAX) {
+        LOGGER.info("The min max byte limit for string type value \"" + allowedCharactersLimit
+            + "\" is invalid. Using the default value \""
+            + CarbonCommonConstants.CARBON_MINMAX_ALLOWED_BYTE_COUNT_DEFAULT);
+        carbonProperties.setProperty(CARBON_MINMAX_ALLOWED_BYTE_COUNT,
+            CarbonCommonConstants.CARBON_MINMAX_ALLOWED_BYTE_COUNT_DEFAULT);
+      } else {
+        LOGGER.info(
+            "Considered value for min max byte limit for string is: " + allowedCharactersLimit);
+        carbonProperties
+            .setProperty(CARBON_MINMAX_ALLOWED_BYTE_COUNT, allowedCharactersLimit + "");
+      }
+    } catch (NumberFormatException e) {
+      LOGGER.info("The min max byte limit for string type value \"" + allowedCharactersLimit
+          + "\" is invalid. Using the default value \""
+          + CarbonCommonConstants.CARBON_MINMAX_ALLOWED_BYTE_COUNT_DEFAULT);
+      carbonProperties.setProperty(CARBON_MINMAX_ALLOWED_BYTE_COUNT,
+          CarbonCommonConstants.CARBON_MINMAX_ALLOWED_BYTE_COUNT_DEFAULT);
     }
   }
 }

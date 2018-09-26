@@ -30,7 +30,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat
 import org.apache.spark.{SparkContext, SparkEnv}
 import org.apache.spark.rdd.CarbonMergeFilesRDD
-import org.apache.spark.sql.{Row, RowFactory}
+import org.apache.spark.sql.{Row, RowFactory, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.execution.command.{ColumnProperty, Field, PartitionerField}
@@ -502,30 +502,31 @@ object CommonUtil {
   }
 
   /**
-   * This method will validate the table block size specified by the user
+   * This method will validate the table block size and blocklet size specified by the user
    *
-   * @param tableProperties
+   * @param tableProperties table property specified by user
+   * @param propertyName property name
    */
-  def validateTableBlockSize(tableProperties: Map[String, String]): Unit = {
-    var tableBlockSize: Integer = 0
-    if (tableProperties.get(CarbonCommonConstants.TABLE_BLOCKSIZE).isDefined) {
+  def validateSize(tableProperties: Map[String, String], propertyName: String): Unit = {
+    var size: Integer = 0
+    if (tableProperties.get(propertyName).isDefined) {
       val blockSizeStr: String =
-        parsePropertyValueStringInMB(tableProperties(CarbonCommonConstants.TABLE_BLOCKSIZE))
+        parsePropertyValueStringInMB(tableProperties(propertyName))
       try {
-        tableBlockSize = Integer.parseInt(blockSizeStr)
+        size = Integer.parseInt(blockSizeStr)
       } catch {
         case e: NumberFormatException =>
-          throw new MalformedCarbonCommandException("Invalid table_blocksize value found: " +
+          throw new MalformedCarbonCommandException(s"Invalid $propertyName value found: " +
                                                     s"$blockSizeStr, only int value from 1 MB to " +
                                                     s"2048 MB is supported.")
       }
-      if (tableBlockSize < CarbonCommonConstants.BLOCK_SIZE_MIN_VAL ||
-          tableBlockSize > CarbonCommonConstants.BLOCK_SIZE_MAX_VAL) {
-        throw new MalformedCarbonCommandException("Invalid table_blocksize value found: " +
+      if (size < CarbonCommonConstants.BLOCK_SIZE_MIN_VAL ||
+          size > CarbonCommonConstants.BLOCK_SIZE_MAX_VAL) {
+        throw new MalformedCarbonCommandException(s"Invalid $propertyName value found: " +
                                                   s"$blockSizeStr, only int value from 1 MB to " +
                                                   s"2048 MB is supported.")
       }
-      tableProperties.put(CarbonCommonConstants.TABLE_BLOCKSIZE, blockSizeStr)
+      tableProperties.put(propertyName, blockSizeStr)
     }
   }
 
@@ -839,7 +840,7 @@ object CommonUtil {
    *                                         which do not store the blocklet info to current
    *                                         version
    */
-  def mergeIndexFiles(sparkContext: SparkContext,
+  def mergeIndexFiles(sparkSession: SparkSession,
     segmentIds: Seq[String],
     segmentFileNameToSegmentIdMap: java.util.Map[String, String],
     tablePath: String,
@@ -848,7 +849,7 @@ object CommonUtil {
     readFileFooterFromCarbonDataFile: Boolean = false): Unit = {
     if (mergeIndexProperty) {
       new CarbonMergeFilesRDD(
-        sparkContext,
+        sparkSession,
         carbonTable,
         segmentIds,
         segmentFileNameToSegmentIdMap,
@@ -860,7 +861,7 @@ object CommonUtil {
           CarbonCommonConstants.CARBON_MERGE_INDEX_IN_SEGMENT,
           CarbonCommonConstants.CARBON_MERGE_INDEX_IN_SEGMENT_DEFAULT).toBoolean) {
           new CarbonMergeFilesRDD(
-            sparkContext,
+            sparkSession,
             carbonTable,
             segmentIds,
             segmentFileNameToSegmentIdMap,
@@ -871,7 +872,7 @@ object CommonUtil {
         case _: Exception =>
           if (CarbonCommonConstants.CARBON_MERGE_INDEX_IN_SEGMENT_DEFAULT.toBoolean) {
             new CarbonMergeFilesRDD(
-              sparkContext,
+              sparkSession,
               carbonTable,
               segmentIds,
               segmentFileNameToSegmentIdMap,

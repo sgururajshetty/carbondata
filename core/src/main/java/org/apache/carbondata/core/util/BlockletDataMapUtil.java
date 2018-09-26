@@ -45,8 +45,10 @@ import org.apache.carbondata.core.indexstore.BlockMetaInfo;
 import org.apache.carbondata.core.indexstore.TableBlockIndexUniqueIdentifier;
 import org.apache.carbondata.core.indexstore.TableBlockIndexUniqueIdentifierWrapper;
 import org.apache.carbondata.core.indexstore.blockletindex.BlockletDataMapDistributable;
+import org.apache.carbondata.core.indexstore.blockletindex.BlockletDataMapFactory;
 import org.apache.carbondata.core.indexstore.blockletindex.SegmentIndexFileStore;
 import org.apache.carbondata.core.metadata.blocklet.DataFileFooter;
+import org.apache.carbondata.core.metadata.blocklet.index.BlockletMinMaxIndex;
 import org.apache.carbondata.core.metadata.datatype.DataType;
 import org.apache.carbondata.core.metadata.datatype.DataTypes;
 import org.apache.carbondata.core.metadata.schema.table.CarbonTable;
@@ -60,6 +62,7 @@ import org.apache.carbondata.core.util.path.CarbonTablePath;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 
@@ -79,7 +82,7 @@ public class BlockletDataMapUtil {
         && indexFileStore.getFileData(identifier.getIndexFileName()) == null) {
       CarbonFile indexMergeFile = FileFactory.getCarbonFile(
           identifier.getIndexFilePath() + CarbonCommonConstants.FILE_SEPARATOR + identifier
-              .getMergeIndexFileName());
+              .getMergeIndexFileName(), identifierWrapper.getConfiguration());
       if (indexMergeFile.exists() && !filesRead.contains(indexMergeFile.getPath())) {
         indexFileStore.readAllIIndexOfSegment(new CarbonFile[] { indexMergeFile });
         filesRead.add(indexMergeFile.getPath());
@@ -88,19 +91,21 @@ public class BlockletDataMapUtil {
     if (indexFileStore.getFileData(identifier.getIndexFileName()) == null) {
       indexFileStore.readAllIIndexOfSegment(new CarbonFile[] { FileFactory.getCarbonFile(
           identifier.getIndexFilePath() + CarbonCommonConstants.FILE_SEPARATOR + identifier
-              .getIndexFileName()) });
+              .getIndexFileName(), identifierWrapper.getConfiguration()) });
     }
-    DataFileFooterConverter fileFooterConverter = new DataFileFooterConverter();
     Map<String, BlockMetaInfo> blockMetaInfoMap = new HashMap<>();
-    List<DataFileFooter> indexInfo = fileFooterConverter.getIndexInfo(
-        identifier.getIndexFilePath() + CarbonCommonConstants.FILE_SEPARATOR + identifier
-            .getIndexFileName(), indexFileStore.getFileData(identifier.getIndexFileName()));
     CarbonTable carbonTable = identifierWrapper.getCarbonTable();
     if (carbonTable != null) {
       isTransactionalTable = carbonTable.getTableInfo().isTransactionalTable();
       tableColumnList =
           carbonTable.getTableInfo().getFactTable().getListOfColumns();
     }
+    DataFileFooterConverter fileFooterConverter =
+        new DataFileFooterConverter(identifierWrapper.getConfiguration());
+    List<DataFileFooter> indexInfo = fileFooterConverter.getIndexInfo(
+        identifier.getIndexFilePath() + CarbonCommonConstants.FILE_SEPARATOR + identifier
+            .getIndexFileName(), indexFileStore.getFileData(identifier.getIndexFileName()),
+        isTransactionalTable);
     for (DataFileFooter footer : indexInfo) {
       if ((!isTransactionalTable) && (tableColumnList.size() != 0) &&
           !isSameColumnSchemaList(footer.getColumnInTable(), tableColumnList)) {
@@ -137,9 +142,9 @@ public class BlockletDataMapUtil {
    * @throws IOException
    */
   public static Map<String, BlockMetaInfo> createCarbonDataFileBlockMetaInfoMapping(
-      String segmentFilePath) throws IOException {
+      String segmentFilePath, Configuration configuration) throws IOException {
     Map<String, BlockMetaInfo> fileNameToMetaInfoMapping = new TreeMap();
-    CarbonFile carbonFile = FileFactory.getCarbonFile(segmentFilePath);
+    CarbonFile carbonFile = FileFactory.getCarbonFile(segmentFilePath, configuration);
     if (carbonFile instanceof AbstractDFSCarbonFile) {
       PathFilter pathFilter = new PathFilter() {
         @Override public boolean accept(Path path) {
@@ -236,21 +241,17 @@ public class BlockletDataMapUtil {
 
   /**
    * Method to check if CACHE_LEVEL is set to BLOCK or BLOCKLET
-   *
-   * @param carbonTable
-   * @param cacheLevelBlocklet
-   * @return
    */
-  public static boolean isCacheLevelBlock(CarbonTable carbonTable, String cacheLevelBlocklet) {
+  public static boolean isCacheLevelBlock(CarbonTable carbonTable) {
     String cacheLevel = carbonTable.getTableInfo().getFactTable().getTableProperties()
         .get(CarbonCommonConstants.CACHE_LEVEL);
-    if (!cacheLevelBlocklet.equals(cacheLevel)) {
-      return true;
+    if (BlockletDataMapFactory.CACHE_LEVEL_BLOCKLET.equals(cacheLevel)) {
+      return false;
     }
-    return false;
+    return true;
   }
 
-  private static boolean isSameColumnSchemaList(List<ColumnSchema> indexFileColumnList,
+  public static boolean isSameColumnSchemaList(List<ColumnSchema> indexFileColumnList,
       List<ColumnSchema> tableColumnList) {
     if (indexFileColumnList.size() != tableColumnList.size()) {
       LOG.error("Index file's column size is " + indexFileColumnList.size()
@@ -258,7 +259,7 @@ public class BlockletDataMapUtil {
       return false;
     }
     for (int i = 0; i < tableColumnList.size(); i++) {
-      if (!indexFileColumnList.get(i).equalsWithStrictCheck(tableColumnList.get(i))) {
+      if (!tableColumnList.contains(indexFileColumnList.get(i))) {
         return false;
       }
     }
@@ -357,8 +358,8 @@ public class BlockletDataMapUtil {
       columnSchema.write(dataOutput);
     }
     byte[] byteArray = stream.toByteArray();
-    // Compress with snappy to reduce the size of schema
-    return CompressorFactory.getInstance().getCompressor().compressByte(byteArray);
+    // Compress to reduce the size of schema
+    return CompressorFactory.SupportedCompressor.SNAPPY.getCompressor().compressByte(byteArray);
   }
 
   /**
@@ -369,7 +370,8 @@ public class BlockletDataMapUtil {
    */
   public static List<ColumnSchema> readColumnSchema(byte[] schemaArray) throws IOException {
     // uncompress it.
-    schemaArray = CompressorFactory.getInstance().getCompressor().unCompressByte(schemaArray);
+    schemaArray = CompressorFactory.SupportedCompressor.SNAPPY.getCompressor().unCompressByte(
+        schemaArray);
     ByteArrayInputStream schemaStream = new ByteArrayInputStream(schemaArray);
     DataInput schemaInput = new DataInputStream(schemaStream);
     List<ColumnSchema> columnSchemas = new ArrayList<>();
@@ -478,10 +480,29 @@ public class BlockletDataMapUtil {
   private static boolean filterColumnExistsInMinMaxColumnList(List<CarbonColumn> minMaxCacheColumns,
       CarbonColumn filterColumn) {
     for (CarbonColumn column : minMaxCacheColumns) {
-      if (filterColumn.getColumnId().equals(column.getColumnId())) {
+      if (filterColumn.getColumnId().equalsIgnoreCase(column.getColumnId())) {
         return true;
       }
     }
     return false;
+  }
+
+  /**
+   * Method to update the min max flag. For CACHE_LEVEL=BLOCK, for any column if min max is not
+   * written in any of the blocklet then for that column the flag will be false for the
+   * complete block
+   *
+   * @param minMaxIndex
+   * @param minMaxFlag
+   */
+  public static void updateMinMaxFlag(BlockletMinMaxIndex minMaxIndex, boolean[] minMaxFlag) {
+    boolean[] isMinMaxSet = minMaxIndex.getIsMinMaxSet();
+    if (null != isMinMaxSet) {
+      for (int i = 0; i < minMaxFlag.length; i++) {
+        if (!isMinMaxSet[i]) {
+          minMaxFlag[i] = isMinMaxSet[i];
+        }
+      }
+    }
   }
 }

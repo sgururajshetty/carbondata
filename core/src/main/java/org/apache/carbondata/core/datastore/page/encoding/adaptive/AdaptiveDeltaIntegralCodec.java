@@ -35,6 +35,7 @@ import org.apache.carbondata.core.datastore.page.statistics.SimpleStatsResult;
 import org.apache.carbondata.core.memory.MemoryException;
 import org.apache.carbondata.core.metadata.datatype.DataType;
 import org.apache.carbondata.core.metadata.datatype.DataTypes;
+import org.apache.carbondata.format.DataChunk2;
 import org.apache.carbondata.format.Encoding;
 
 /**
@@ -45,12 +46,11 @@ import org.apache.carbondata.format.Encoding;
  */
 public class AdaptiveDeltaIntegralCodec extends AdaptiveCodec {
 
-  private ColumnPage encodedPage;
   private long max;
 
   public AdaptiveDeltaIntegralCodec(DataType srcDataType, DataType targetDataType,
-      SimpleStatsResult stats) {
-    super(srcDataType, targetDataType, stats);
+      SimpleStatsResult stats, boolean isInvertedIndex) {
+    super(srcDataType, targetDataType, stats, isInvertedIndex);
     if (srcDataType == DataTypes.BYTE) {
       this.max = (byte) stats.getMax();
     } else if (srcDataType == DataTypes.SHORT) {
@@ -78,32 +78,42 @@ public class AdaptiveDeltaIntegralCodec extends AdaptiveCodec {
   @Override
   public ColumnPageEncoder createEncoder(Map<String, String> parameter) {
     return new ColumnPageEncoder() {
-      final Compressor compressor = CompressorFactory.getInstance().getCompressor();
-
+      byte[] result = null;
       @Override
       protected byte[] encodeData(ColumnPage input) throws MemoryException, IOException {
         if (encodedPage != null) {
           throw new IllegalStateException("already encoded");
         }
-        encodedPage = ColumnPage.newPage(input.getColumnSpec(), targetDataType,
-            input.getPageSize());
-        input.convertValue(converter);
-        byte[] result = encodedPage.compress(compressor);
+        Compressor compressor =
+            CompressorFactory.getInstance().getCompressor(input.getColumnCompressorName());
+        result = encodeAndCompressPage(input, converter, compressor);
+        byte[] bytes = writeInvertedIndexIfRequired(result);
         encodedPage.freeMemory();
+        if (bytes.length != 0) {
+          return bytes;
+        }
         return result;
       }
 
       @Override
       protected ColumnPageEncoderMeta getEncoderMeta(ColumnPage inputPage) {
         return new ColumnPageEncoderMeta(inputPage.getColumnSpec(), targetDataType,
-            inputPage.getStatistics(), compressor.getName());
+            inputPage.getStatistics(), inputPage.getColumnCompressorName());
       }
 
       @Override
       protected List<Encoding> getEncodingList() {
         List<Encoding> encodings = new ArrayList<>();
         encodings.add(Encoding.ADAPTIVE_DELTA_INTEGRAL);
+        if (null != indexStorage && indexStorage.getRowIdPageLengthInBytes() > 0) {
+          encodings.add(Encoding.INVERTED_INDEX);
+        }
         return encodings;
+      }
+
+      @Override
+      protected void fillLegacyFields(DataChunk2 dataChunk) throws IOException {
+        fillLegacyFieldsIfRequired(dataChunk, result);
       }
 
     };

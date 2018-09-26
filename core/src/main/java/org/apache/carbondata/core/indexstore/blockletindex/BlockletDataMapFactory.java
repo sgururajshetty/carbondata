@@ -49,6 +49,7 @@ import org.apache.carbondata.core.memory.MemoryException;
 import org.apache.carbondata.core.metadata.AbsoluteTableIdentifier;
 import org.apache.carbondata.core.metadata.schema.table.CarbonTable;
 import org.apache.carbondata.core.metadata.schema.table.DataMapSchema;
+import org.apache.carbondata.core.scan.filter.resolver.FilterResolverIntf;
 import org.apache.carbondata.core.util.BlockletDataMapUtil;
 import org.apache.carbondata.core.util.path.CarbonTablePath;
 import org.apache.carbondata.events.Event;
@@ -97,8 +98,7 @@ public class BlockletDataMapFactory extends CoarseGrainDataMapFactory
    * @return
    */
   public static DataMap createDataMap(CarbonTable carbonTable) {
-    boolean cacheLevelBlock =
-        BlockletDataMapUtil.isCacheLevelBlock(carbonTable, CACHE_LEVEL_BLOCKLET);
+    boolean cacheLevelBlock = BlockletDataMapUtil.isCacheLevelBlock(carbonTable);
     if (cacheLevelBlock) {
       // case1: when CACHE_LEVEL = BLOCK
       return new BlockDataMap();
@@ -137,7 +137,7 @@ public class BlockletDataMapFactory extends CoarseGrainDataMapFactory
       for (TableBlockIndexUniqueIdentifier tableBlockIndexUniqueIdentifier : identifiers) {
         tableBlockIndexUniqueIdentifierWrappers.add(
             new TableBlockIndexUniqueIdentifierWrapper(tableBlockIndexUniqueIdentifier,
-                this.getCarbonTable()));
+                this.getCarbonTable(), segment.getConfiguration()));
       }
     }
     List<BlockletDataMapIndexWrapper> blockletDataMapIndexWrappers =
@@ -388,7 +388,7 @@ public class BlockletDataMapFactory extends CoarseGrainDataMapFactory
     List<CoarseGrainDataMap> dataMaps = getDataMaps(segment);
     for (CoarseGrainDataMap dataMap : dataMaps) {
       blocklets.addAll(
-          dataMap.prune(null, getSegmentProperties(segment), partitions));
+          dataMap.prune((FilterResolverIntf) null, getSegmentProperties(segment), partitions));
     }
     return blocklets;
   }

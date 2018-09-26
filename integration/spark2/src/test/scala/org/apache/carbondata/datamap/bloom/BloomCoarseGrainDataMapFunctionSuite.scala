@@ -709,7 +709,7 @@ class BloomCoarseGrainDataMapFunctionSuite  extends QueryTest with BeforeAndAfte
       s"""
          | CREATE TABLE $bloomDMSampleTable(empno string, doj date, salary float)
          | STORED BY 'carbondata'
-         | TBLPROPERTIES('SORT_COLUMNS'='empno,doj', 'DICTIONARY_INCLUDE'='doj')
+         | TBLPROPERTIES('SORT_COLUMNS'='empno,doj', 'DICTIONARY_INCLUDE'='doj,empno')
        """.stripMargin)
     sql(
       s"""
@@ -780,7 +780,7 @@ class BloomCoarseGrainDataMapFunctionSuite  extends QueryTest with BeforeAndAfte
     import scala.collection.JavaConverters._
     (0 to 1).foreach { segId =>
       val datamapPath = CarbonTablePath.getDataMapStorePath(carbonTable.getTablePath, segId.toString, dataMapName)
-      assert(FileUtils.listFiles(FileUtils.getFile(datamapPath), Array("bloomindex"), true).asScala.nonEmpty)
+      assert(FileUtils.listFiles(FileUtils.getFile(datamapPath), Array("bloomindexmerge"), true).asScala.nonEmpty)
     }
     // delete and clean the first segment, the corresponding datamap files should be cleaned too
     sql(s"DELETE FROM TABLE $bloomDMSampleTable WHERE SEGMENT.ID IN (0)")
@@ -788,7 +788,7 @@ class BloomCoarseGrainDataMapFunctionSuite  extends QueryTest with BeforeAndAfte
     var datamapPath = CarbonTablePath.getDataMapStorePath(carbonTable.getTablePath, "0", dataMapName)
     assert(!FileUtils.getFile(datamapPath).exists(), "index file of this segment has been deleted, should not exist")
     datamapPath = CarbonTablePath.getDataMapStorePath(carbonTable.getTablePath, "1", dataMapName)
-    assert(FileUtils.listFiles(FileUtils.getFile(datamapPath), Array("bloomindex"), true).asScala.nonEmpty)
+    assert(FileUtils.listFiles(FileUtils.getFile(datamapPath), Array("bloomindexmerge"), true).asScala.nonEmpty)
   }
 
   // two blocklets in one block are hit by bloom datamap while block cache level hit this block
@@ -830,6 +830,8 @@ class BloomCoarseGrainDataMapFunctionSuite  extends QueryTest with BeforeAndAfte
     sql("drop table if exists test_rcd").collect()
     CarbonProperties.getInstance().addProperty(CarbonCommonConstants.BLOCKLET_SIZE,
       CarbonCommonConstants.BLOCKLET_SIZE_DEFAULT_VAL)
+    CarbonProperties.getInstance().addProperty(CarbonV3DataFormatConstants.BLOCKLET_SIZE_IN_MB,
+      CarbonV3DataFormatConstants.BLOCKLET_SIZE_IN_MB_DEFAULT_VALUE)
   }
 
   /**

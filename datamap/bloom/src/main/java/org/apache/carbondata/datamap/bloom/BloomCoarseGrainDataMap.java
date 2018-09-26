@@ -17,7 +17,6 @@
 
 package org.apache.carbondata.datamap.bloom;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.text.DateFormat;
@@ -63,6 +62,7 @@ import org.apache.carbondata.core.scan.expression.conditional.ListExpression;
 import org.apache.carbondata.core.scan.filter.resolver.FilterResolverIntf;
 import org.apache.carbondata.core.util.CarbonProperties;
 import org.apache.carbondata.core.util.CarbonUtil;
+import org.apache.carbondata.core.util.DataTypeUtil;
 import org.apache.carbondata.processing.loading.DataField;
 import org.apache.carbondata.processing.loading.converter.BadRecordLogHolder;
 import org.apache.carbondata.processing.loading.converter.FieldConverter;
@@ -81,11 +81,12 @@ import org.apache.hadoop.util.bloom.Key;
 public class BloomCoarseGrainDataMap extends CoarseGrainDataMap {
   private static final LogService LOGGER =
       LogServiceFactory.getLogService(BloomCoarseGrainDataMap.class.getName());
-  public static final String BLOOM_INDEX_SUFFIX = ".bloomindex";
   private Map<String, CarbonColumn> name2Col;
   private Cache<BloomCacheKeyValue.CacheKey, BloomCacheKeyValue.CacheValue> cache;
   private String shardName;
   private Path indexPath;
+  private Set<String> filteredShard;
+  private boolean needShardPrune;
   /**
    * This is used to convert literal filter value to internal carbon value
    */
@@ -100,6 +101,13 @@ public class BloomCoarseGrainDataMap extends CoarseGrainDataMap {
       BloomDataMapModel model = (BloomDataMapModel) dataMapModel;
       this.cache = model.getCache();
     }
+  }
+
+  public void setFilteredShard(Set<String> filteredShard) {
+    this.filteredShard = filteredShard;
+    // do shard prune when pruning only if bloom index files are merged
+    this.needShardPrune = filteredShard != null &&
+            shardName.equals(BloomIndexFileStore.MERGE_BLOOM_INDEX_SHARD_NAME);
   }
 
   /**
@@ -132,7 +140,7 @@ public class BloomCoarseGrainDataMap extends CoarseGrainDataMap {
         dataField.setTimestampFormat(tsFormat);
         FieldConverter fieldConverter = FieldEncoderFactory.getInstance()
             .createFieldEncoder(dataField, absoluteTableIdentifier, i, nullFormat, null, false,
-                localCaches[i], false, parentTablePath);
+                localCaches[i], false, parentTablePath, false);
         this.name2Converters.put(indexedColumn.get(i).getColName(), fieldConverter);
       }
     } catch (IOException e) {
@@ -182,11 +190,16 @@ public class BloomCoarseGrainDataMap extends CoarseGrainDataMap {
       BloomCacheKeyValue.CacheValue cacheValue = cache.get(cacheKey);
       List<CarbonBloomFilter> bloomIndexList = cacheValue.getBloomFilters();
       for (CarbonBloomFilter bloomFilter : bloomIndexList) {
+        if (needShardPrune && !filteredShard.contains(bloomFilter.getShardName())) {
+          // skip shard which has been pruned in Main datamap
+          continue;
+        }
         boolean scanRequired = bloomFilter.membershipTest(new Key(bloomQueryModel.filterValue));
         if (scanRequired) {
           LOGGER.debug(String.format("BloomCoarseGrainDataMap: Need to scan -> blocklet#%s",
               String.valueOf(bloomFilter.getBlockletNo())));
-          Blocklet blocklet = new Blocklet(shardName, String.valueOf(bloomFilter.getBlockletNo()));
+          Blocklet blocklet = new Blocklet(bloomFilter.getShardName(),
+                  String.valueOf(bloomFilter.getBlockletNo()));
           hitBlocklets.add(blocklet);
         } else {
           LOGGER.debug(String.format("BloomCoarseGrainDataMap: Skip scan -> blocklet#%s",
@@ -331,8 +344,18 @@ public class BloomCoarseGrainDataMap extends CoarseGrainDataMap {
       // for dictionary/date columns, convert the surrogate key to bytes
       internalFilterValue = CarbonUtil.getValueAsBytes(DataTypes.INT, convertedValue);
     } else {
-      // for non dictionary dimensions, is already bytes,
-      internalFilterValue = (byte[]) convertedValue;
+      // for non dictionary dimensions, numeric columns will be of original data,
+      // so convert the data to bytes
+      if (DataTypeUtil.isPrimitiveColumn(carbonColumn.getDataType())) {
+        if (convertedValue == null) {
+          convertedValue = DataConvertUtil.getNullValueForMeasure(carbonColumn.getDataType(),
+              carbonColumn.getColumnSchema().getScale());
+        }
+        internalFilterValue =
+            CarbonUtil.getValueAsBytes(carbonColumn.getDataType(), convertedValue);
+      } else {
+        internalFilterValue = (byte[]) convertedValue;
+      }
     }
     if (internalFilterValue.length == 0) {
       internalFilterValue = CarbonCommonConstants.MEMBER_DEFAULT_VAL_ARRAY;
@@ -349,14 +372,6 @@ public class BloomCoarseGrainDataMap extends CoarseGrainDataMap {
   public void clear() {
   }
 
-  /**
-   * get bloom index file
-   * @param shardPath path for the shard
-   * @param colName index column name
-   */
-  public static String getBloomIndexFile(String shardPath, String colName) {
-    return shardPath.concat(File.separator).concat(colName).concat(BLOOM_INDEX_SUFFIX);
-  }
   static class BloomQueryModel {
     private String columnName;
     private byte[] filterValue;

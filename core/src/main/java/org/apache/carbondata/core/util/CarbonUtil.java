@@ -31,6 +31,7 @@ import org.apache.carbondata.core.cache.dictionary.DictionaryColumnUniqueIdentif
 import org.apache.carbondata.core.constants.CarbonCommonConstants;
 import org.apache.carbondata.core.datamap.Segment;
 import org.apache.carbondata.core.datastore.FileReader;
+import org.apache.carbondata.core.datastore.TableSpec;
 import org.apache.carbondata.core.datastore.block.AbstractIndex;
 import org.apache.carbondata.core.datastore.block.TableBlockInfo;
 import org.apache.carbondata.core.datastore.chunk.DimensionColumnPage;
@@ -39,8 +40,12 @@ import org.apache.carbondata.core.datastore.chunk.impl.MeasureRawColumnChunk;
 import org.apache.carbondata.core.datastore.columnar.UnBlockIndexer;
 import org.apache.carbondata.core.datastore.exception.CarbonDataWriterException;
 import org.apache.carbondata.core.datastore.filesystem.CarbonFile;
-import org.apache.carbondata.core.datastore.filesystem.CarbonFileFilter;
 import org.apache.carbondata.core.datastore.impl.FileFactory;
+import org.apache.carbondata.core.datastore.page.ColumnPage;
+import org.apache.carbondata.core.datastore.page.FallbackEncodedColumnPage;
+import org.apache.carbondata.core.datastore.page.encoding.ColumnPageEncoder;
+import org.apache.carbondata.core.datastore.page.encoding.DefaultEncodingFactory;
+import org.apache.carbondata.core.datastore.page.encoding.EncodedColumnPage;
 import org.apache.carbondata.core.exception.InvalidConfigurationException;
 import org.apache.carbondata.core.indexstore.BlockletDetailInfo;
 import org.apache.carbondata.core.indexstore.blockletindex.SegmentIndexFileStore;
@@ -48,6 +53,7 @@ import org.apache.carbondata.core.keygenerator.mdkey.NumberCompressor;
 import org.apache.carbondata.core.localdictionary.generator.ColumnLocalDictionaryGenerator;
 import org.apache.carbondata.core.localdictionary.generator.LocalDictionaryGenerator;
 import org.apache.carbondata.core.locks.ICarbonLock;
+import org.apache.carbondata.core.memory.MemoryException;
 import org.apache.carbondata.core.metadata.AbsoluteTableIdentifier;
 import org.apache.carbondata.core.metadata.ColumnarFormatVersion;
 import org.apache.carbondata.core.metadata.SegmentFileStore;
@@ -97,6 +103,7 @@ import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.ArrayUtils;
 import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -110,7 +117,6 @@ import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TCompactProtocol;
 import org.apache.thrift.protocol.TProtocol;
 import org.apache.thrift.transport.TIOStreamTransport;
-import scala.StringContext;
 
 public final class CarbonUtil {
 
@@ -134,8 +140,6 @@ public final class CarbonUtil {
    * HUNDRED
    */
   private static final int CONST_HUNDRED = 100;
-
-  private static final Configuration conf = new Configuration(true);
 
   /**
    * dfs.bytes-per-checksum
@@ -606,7 +610,7 @@ public final class CarbonUtil {
    * @return
    */
   public static String unescapeChar(String parseStr) {
-    return StringContext.treatEscapes(parseStr);
+    return StringEscapeUtils.unescapeJava(parseStr);
   }
 
   /**
@@ -663,7 +667,7 @@ public final class CarbonUtil {
    */
   public static String checkAndAppendHDFSUrl(String filePath) {
     String currentPath = filePath;
-    String defaultFsUrl = conf.get(CarbonCommonConstants.FS_DEFAULT_FS);
+    String defaultFsUrl = FileFactory.getConfiguration().get(CarbonCommonConstants.FS_DEFAULT_FS);
     String baseDFSUrl = CarbonProperties.getInstance()
         .getProperty(CarbonCommonConstants.CARBON_DDL_BASE_HDFS_URL, "");
     if (checkIfPrefixExists(filePath)) {
@@ -700,7 +704,7 @@ public final class CarbonUtil {
       filePath = "/" + filePath;
     }
     currentPath = filePath;
-    String defaultFsUrl = conf.get(CarbonCommonConstants.FS_DEFAULT_FS);
+    String defaultFsUrl = FileFactory.getConfiguration().get(CarbonCommonConstants.FS_DEFAULT_FS);
     if (defaultFsUrl == null) {
       return currentPath;
     }
@@ -1189,7 +1193,7 @@ public final class CarbonUtil {
       List<CarbonDimension> blockDimensions, CarbonDimension dimensionToBeSearched) {
     CarbonDimension currentBlockDimension = null;
     for (CarbonDimension blockDimension : blockDimensions) {
-      if (dimensionToBeSearched.getColumnId().equals(blockDimension.getColumnId())) {
+      if (dimensionToBeSearched.getColumnId().equalsIgnoreCase(blockDimension.getColumnId())) {
         currentBlockDimension = blockDimension;
         break;
       }
@@ -1270,34 +1274,6 @@ public final class CarbonUtil {
         fillCollumnSchemaListForComplexDims(childDims, wrapperColumnSchemaList);
       }
     }
-  }
-
-  /**
-   * Below method will be used to get all the block index info from index file
-   *
-   * @param taskId                  task id of the file
-   * @param tableBlockInfoList      list of table block
-   * @param identifier absolute table identifier
-   * @return list of block info
-   * @throws IOException if any problem while reading
-   */
-  public static List<DataFileFooter> readCarbonIndexFile(String taskId, String bucketNumber,
-      List<TableBlockInfo> tableBlockInfoList, AbsoluteTableIdentifier identifier)
-      throws IOException {
-    // need to sort the  block info list based for task in ascending  order so
-    // it will be sinkup with block index read from file
-    Collections.sort(tableBlockInfoList);
-    // geting the index file path
-    //TODO need to pass proper partition number when partiton will be supported
-    String carbonIndexFilePath = CarbonTablePath
-        .getCarbonIndexFilePath(identifier.getTablePath(), taskId,
-            tableBlockInfoList.get(0).getSegmentId(),
-            bucketNumber, CarbonTablePath.DataFileUtil
-                .getTimeStampFromFileName(tableBlockInfoList.get(0).getFilePath()),
-            tableBlockInfoList.get(0).getVersion());
-    DataFileFooterConverter fileFooterConverter = new DataFileFooterConverter();
-    // read the index info and return
-    return fileFooterConverter.getIndexInfo(carbonIndexFilePath, tableBlockInfoList);
   }
 
   /**
@@ -1843,7 +1819,7 @@ public final class CarbonUtil {
         surrogate ^= data[startOffsetOfData + 3] & 0xFF;
         return surrogate;
       default:
-        throw new IllegalArgumentException("Int cannot me more than 4 bytes");
+        throw new IllegalArgumentException("Int cannot be more than 4 bytes");
     }
   }
   /**
@@ -2134,7 +2110,7 @@ public final class CarbonUtil {
     wrapperColumnSchema.setColumnUniqueId(externalColumnSchema.getColumn_id());
     wrapperColumnSchema.setColumnReferenceId(externalColumnSchema.getColumnReferenceId());
     wrapperColumnSchema.setColumnName(externalColumnSchema.getColumn_name());
-    DataType dataType = thriftDataTyopeToWrapperDataType(externalColumnSchema.data_type);
+    DataType dataType = thriftDataTypeToWrapperDataType(externalColumnSchema.data_type);
     if (DataTypes.isDecimal(dataType)) {
       DecimalType decimalType = (DecimalType) dataType;
       decimalType.setPrecision(externalColumnSchema.getPrecision());
@@ -2158,6 +2134,7 @@ public final class CarbonUtil {
         wrapperColumnSchema.setSortColumn(true);
       }
     }
+    wrapperColumnSchema.setColumnProperties(properties);
     wrapperColumnSchema.setFunction(externalColumnSchema.getAggregate_function());
     List<org.apache.carbondata.format.ParentColumnTableRelation> parentColumnTableRelation =
         externalColumnSchema.getParentColumnTableRelations();
@@ -2205,7 +2182,7 @@ public final class CarbonUtil {
     }
   }
 
-  static DataType thriftDataTyopeToWrapperDataType(
+  static DataType thriftDataTypeToWrapperDataType(
       org.apache.carbondata.format.DataType dataTypeThrift) {
     switch (dataTypeThrift) {
       case BOOLEAN:
@@ -2230,31 +2207,40 @@ public final class CarbonUtil {
         return DataTypes.createDefaultArrayType();
       case STRUCT:
         return DataTypes.createDefaultStructType();
+      case MAP:
+        return DataTypes.createDefaultMapType();
       case VARCHAR:
         return DataTypes.VARCHAR;
+      case FLOAT:
+        return DataTypes.FLOAT;
+      case BYTE:
+        return DataTypes.BYTE;
       default:
         return DataTypes.STRING;
     }
   }
 
-  public static List<String> getFilePathExternalFilePath(String path) {
+  public static String getFilePathExternalFilePath(String path, Configuration configuration) {
 
     // return the list of carbondata files in the given path.
-    CarbonFile segment = FileFactory.getCarbonFile(path, FileFactory.getFileType(path));
-    CarbonFile[] dataFiles = segment.listFiles(new CarbonFileFilter() {
-      @Override public boolean accept(CarbonFile file) {
+    CarbonFile segment = FileFactory.getCarbonFile(path, configuration);
 
-        if (file.getName().endsWith(CarbonCommonConstants.FACT_FILE_EXT)) {
-          return true;
+    CarbonFile[] dataFiles = segment.listFiles();
+    for (CarbonFile dataFile : dataFiles) {
+      if (dataFile.getName().endsWith(CarbonCommonConstants.FACT_FILE_EXT)) {
+        return dataFile.getAbsolutePath();
+      } else if (dataFile.isDirectory()) {
+        // if the list has directories that doesn't contain data files,
+        // continue checking other files/directories in the list.
+        if (getFilePathExternalFilePath(dataFile.getAbsolutePath(), configuration) == null) {
+          continue;
+        } else {
+          return getFilePathExternalFilePath(dataFile.getAbsolutePath(), configuration);
         }
-        return false;
       }
-    });
-    List<String> filePaths = new ArrayList<>(dataFiles.length);
-    for (CarbonFile dfiles : dataFiles) {
-      filePaths.add(dfiles.getAbsolutePath());
     }
-    return filePaths;
+    //returning null only if the path doesn't have data files.
+    return null;
   }
 
   /**
@@ -2263,22 +2249,21 @@ public final class CarbonUtil {
    * @return table info containing the schema
    */
   public static org.apache.carbondata.format.TableInfo inferSchema(String carbonDataFilePath,
-      String tableName, boolean isCarbonFileProvider) throws IOException {
-    List<String> filePaths;
-    if (isCarbonFileProvider) {
-      filePaths = getFilePathExternalFilePath(carbonDataFilePath + "/Fact/Part0/Segment_null");
-    } else {
-      filePaths = getFilePathExternalFilePath(carbonDataFilePath);
-    }
+      String tableName, boolean isCarbonFileProvider, Configuration configuration)
+      throws IOException {
     String fistFilePath = null;
-    try {
-      fistFilePath = filePaths.get(0);
-    } catch (Exception e) {
+    if (isCarbonFileProvider) {
+      fistFilePath = getFilePathExternalFilePath(carbonDataFilePath + "/Fact/Part0/Segment_null",
+          configuration);
+    } else {
+      fistFilePath = getFilePathExternalFilePath(carbonDataFilePath, configuration);
+    }
+    if (fistFilePath == null) {
       // Check if we can infer the schema from the hive metastore.
       LOGGER.error("CarbonData file is not present in the table location");
       throw new IOException("CarbonData file is not present in the table location");
     }
-    CarbonHeaderReader carbonHeaderReader = new CarbonHeaderReader(fistFilePath);
+    CarbonHeaderReader carbonHeaderReader = new CarbonHeaderReader(fistFilePath, configuration);
     List<ColumnSchema> columnSchemaList = carbonHeaderReader.readSchema();
     // only columnSchema is the valid entry, reset all dummy entries.
     TableSchema tableSchema = getDummyTableSchema(tableName,columnSchemaList);
@@ -2416,6 +2401,11 @@ public final class CarbonUtil {
     } else if (dataType == DataTypes.DOUBLE) {
       b = ByteBuffer.allocate(8);
       b.putDouble((double) value);
+      b.flip();
+      return b.array();
+    } else if (dataType == DataTypes.FLOAT) {
+      b = ByteBuffer.allocate(8);
+      b.putFloat((float) value);
       b.flip();
       return b.array();
     } else if (DataTypes.isDecimal(dataType)) {
@@ -2646,7 +2636,7 @@ public final class CarbonUtil {
     HashMap<String, Long> dataAndIndexSize = new HashMap<String, Long>();
     Map<String, SegmentFileStore.FolderDetails> locationMap = fileStore.getLocationMap();
     if (locationMap != null) {
-      fileStore.readIndexFiles();
+      fileStore.readIndexFiles(FileFactory.getConfiguration());
       Map<String, List<String>> indexFilesMap = fileStore.getIndexFilesMap();
       // get the size of carbonindex file
       carbonIndexSize = getCarbonIndexSize(fileStore, locationMap);
@@ -3193,8 +3183,7 @@ public final class CarbonUtil {
    * @param carbonTable
    * carbon Table
    */
-  public static ColumnarFormatVersion getFormatVersion(CarbonTable carbonTable)
-      throws IOException {
+  public static ColumnarFormatVersion getFormatVersion(CarbonTable carbonTable) throws IOException {
     String segmentPath = null;
     boolean supportFlatFolder = carbonTable.isSupportFlatFolder();
     CarbonIndexFileReader indexReader = new CarbonIndexFileReader();
@@ -3270,6 +3259,28 @@ public final class CarbonUtil {
   }
 
   /**
+   * Check if the page is adaptive encoded
+   *
+   * @param encodings
+   * @return
+   */
+  public static boolean isEncodedWithMeta(List<org.apache.carbondata.format.Encoding> encodings) {
+    if (encodings != null && !encodings.isEmpty()) {
+      org.apache.carbondata.format.Encoding encoding = encodings.get(0);
+      switch (encoding) {
+        case DIRECT_COMPRESS:
+        case DIRECT_STRING:
+        case ADAPTIVE_INTEGRAL:
+        case ADAPTIVE_DELTA_INTEGRAL:
+        case ADAPTIVE_FLOATING:
+        case ADAPTIVE_DELTA_FLOATING:
+          return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Check whether it is standard table means tablepath has Fact/Part0/Segment_ tail present with
    * all carbon files. In other cases carbon files present directly under tablepath or
    * tablepath/partition folder
@@ -3280,5 +3291,71 @@ public final class CarbonUtil {
    */
   public static boolean isStandardCarbonTable(CarbonTable table) {
     return !(table.isSupportFlatFolder() || table.isHivePartitionTable());
+  }
+
+
+  /**
+   * This method will form the FallbackEncodedColumnPage from input column page
+   * @param columnPage actual data column page got from encoded columnpage if decoder based fallback
+   * is disabled or newly created columnpage by extracting actual data from dictionary data, if
+   * decoder based fallback is enabled
+   * @param pageIndex pageIndex
+   * @param columnSpec ColumSpec
+   * @return FallbackEncodedColumnPage
+   * @throws IOException
+   * @throws MemoryException
+   */
+  public static FallbackEncodedColumnPage getFallBackEncodedColumnPage(ColumnPage columnPage,
+      int pageIndex, TableSpec.ColumnSpec columnSpec) throws IOException, MemoryException {
+    // new encoded column page
+    EncodedColumnPage newEncodedColumnPage;
+
+    switch (columnSpec.getColumnType()) {
+      case COMPLEX_ARRAY:
+      case COMPLEX_STRUCT:
+      case COMPLEX:
+        throw new RuntimeException("Unsupported DataType. Only COMPLEX_PRIMITIVE should come");
+
+      case COMPLEX_PRIMITIVE:
+        // for complex type column
+        newEncodedColumnPage = ColumnPageEncoder.encodedColumn(columnPage);
+        break;
+      default:
+        // for primitive column
+        ColumnPageEncoder columnPageEncoder =
+            DefaultEncodingFactory.getInstance().createEncoder(columnSpec, columnPage);
+        newEncodedColumnPage = columnPageEncoder.encode(columnPage);
+    }
+    FallbackEncodedColumnPage fallbackEncodedColumnPage =
+        new FallbackEncodedColumnPage(newEncodedColumnPage, pageIndex);
+    return fallbackEncodedColumnPage;
+  }
+
+  /**
+   * Below method will be used to check whether particular encoding is present
+   * in the dimension or not
+   *
+   * @param encoding encoding to search
+   * @return if encoding is present in dimension
+   */
+  public static boolean hasEncoding(List<org.apache.carbondata.format.Encoding> encodings,
+      org.apache.carbondata.format.Encoding encoding) {
+    return encodings.contains(encoding);
+  }
+
+  /**
+   * Below method will be used to create the inverted index reverse
+   * this will be used to point to actual data in the chunk
+   *
+   * @param invertedIndex inverted index
+   * @return reverse inverted index
+   */
+  public static int[] getInvertedReverseIndex(int[] invertedIndex) {
+    int[] columnIndexTemp = new int[invertedIndex.length];
+
+    for (int i = 0; i < invertedIndex.length; i++) {
+      columnIndexTemp[invertedIndex[i]] = i;
+    }
+    return columnIndexTemp;
   }
 }

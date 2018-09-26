@@ -24,7 +24,6 @@ import java.util.List;
 import org.apache.carbondata.common.logging.LogService;
 import org.apache.carbondata.common.logging.LogServiceFactory;
 import org.apache.carbondata.core.constants.CarbonCommonConstants;
-import org.apache.carbondata.core.constants.CarbonV3DataFormatConstants;
 import org.apache.carbondata.core.datastore.blocklet.BlockletEncodedColumnPage;
 import org.apache.carbondata.core.datastore.blocklet.EncodedBlocklet;
 import org.apache.carbondata.core.datastore.exception.CarbonDataWriterException;
@@ -43,6 +42,10 @@ import org.apache.carbondata.processing.store.CarbonFactDataHandlerModel;
 import org.apache.carbondata.processing.store.TablePage;
 import org.apache.carbondata.processing.store.writer.AbstractFactDataWriter;
 
+import static org.apache.carbondata.core.constants.CarbonCommonConstants.TABLE_BLOCKLET_SIZE;
+import static org.apache.carbondata.core.constants.CarbonV3DataFormatConstants.BLOCKLET_SIZE_IN_MB;
+import static org.apache.carbondata.core.constants.CarbonV3DataFormatConstants.BLOCKLET_SIZE_IN_MB_DEFAULT_VALUE;
+import static org.apache.carbondata.processing.loading.sort.SortScopeOptions.SortScope.NO_SORT;
 
 /**
  * Below class will be used to write the data in V3 format
@@ -66,22 +69,31 @@ public class CarbonFactDataWriterImplV3 extends AbstractFactDataWriter {
    */
   private long blockletSizeThreshold;
 
+  /**
+   * True if this file is sorted
+   */
+  private boolean isSorted;
+
   public CarbonFactDataWriterImplV3(CarbonFactDataHandlerModel model) {
     super(model);
-    blockletSizeThreshold = Long.parseLong(CarbonProperties.getInstance()
-        .getProperty(CarbonV3DataFormatConstants.BLOCKLET_SIZE_IN_MB,
-            CarbonV3DataFormatConstants.BLOCKLET_SIZE_IN_MB_DEFAULT_VALUE))
-        * CarbonCommonConstants.BYTE_TO_KB_CONVERSION_FACTOR
-        * CarbonCommonConstants.BYTE_TO_KB_CONVERSION_FACTOR;
+    String blockletSize =
+        model.getTableSpec().getCarbonTable().getTableInfo().getFactTable().getTableProperties()
+            .get(TABLE_BLOCKLET_SIZE);
+    if (blockletSize == null) {
+      blockletSize = CarbonProperties.getInstance().getProperty(
+          BLOCKLET_SIZE_IN_MB, BLOCKLET_SIZE_IN_MB_DEFAULT_VALUE);
+    }
+    blockletSizeThreshold = Long.parseLong(blockletSize) << 20;
     if (blockletSizeThreshold > fileSizeInBytes) {
       blockletSizeThreshold = fileSizeInBytes;
       LOGGER.info("Blocklet size configure for table is: " + blockletSizeThreshold);
     }
-    blockletDataHolder = new BlockletDataHolder(fallbackExecutorService);
+    blockletDataHolder = new BlockletDataHolder(fallbackExecutorService, model);
+    isSorted = model.getSortScope() != NO_SORT;
   }
 
-  @Override protected void writeBlockletInfoToFile()
-      throws CarbonDataWriterException {
+  @Override
+  protected void writeFooterToFile() throws CarbonDataWriterException {
     try {
       // get the current file position
       long currentPosition = currentOffsetInFile;
@@ -89,6 +101,7 @@ public class CarbonFactDataWriterImplV3 extends AbstractFactDataWriter {
       FileFooter3 convertFileMeta = CarbonMetadataUtil
           .convertFileFooterVersion3(blockletMetadata, blockletIndex, localCardinality,
               thriftColumnSchemaList.size());
+      convertFileMeta.setIs_sort(isSorted);
       // fill the carbon index details
       fillBlockIndexInfoDetails(convertFileMeta.getNum_rows(), carbonDataFileName, currentPosition);
       // write the footer
@@ -322,9 +335,10 @@ public class CarbonFactDataWriterImplV3 extends AbstractFactDataWriter {
           model.getSegmentProperties().getDimensions().size());
       BlockletBTreeIndex bTreeIndex = new BlockletBTreeIndex(index.b_tree_index.getStart_key(),
           index.b_tree_index.getEnd_key());
-      BlockletMinMaxIndex minMaxIndex = new BlockletMinMaxIndex();
-      minMaxIndex.setMinValues(toByteArray(index.getMin_max_index().getMin_values()));
-      minMaxIndex.setMaxValues(toByteArray(index.getMin_max_index().getMax_values()));
+      BlockletMinMaxIndex minMaxIndex =
+          new BlockletMinMaxIndex(index.getMin_max_index().getMin_values(),
+              index.getMin_max_index().getMax_values(),
+              index.getMin_max_index().getMin_max_presence());
       org.apache.carbondata.core.metadata.blocklet.index.BlockletIndex bIndex =
           new org.apache.carbondata.core.metadata.blocklet.index.BlockletIndex(bTreeIndex,
               minMaxIndex);
@@ -371,9 +385,10 @@ public class CarbonFactDataWriterImplV3 extends AbstractFactDataWriter {
     }
   }
 
-  @Override public void writeFooterToFile() throws CarbonDataWriterException {
+  @Override
+  public void writeFooter() throws CarbonDataWriterException {
     if (this.blockletMetadata.size() > 0) {
-      writeBlockletInfoToFile();
+      writeFooterToFile();
     }
   }
 }
